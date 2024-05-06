@@ -7,11 +7,15 @@ import os
 import utils
 from loguru import logger
 from linux import *
+from tracker import FileTracker
+import settings
 
 
 EVENT_SIZE = ctypes.sizeof(inotify_event_struct)
 DEFAULT_NUM_EVENTS = 2048
 DEFAULT_EVENT_BUFFER_SIZE = DEFAULT_NUM_EVENTS * (EVENT_SIZE + 16)
+
+tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
 
 
 class InotifyEvent:
@@ -36,6 +40,16 @@ class InotifyEvent:
     @property
     def is_dir(self):
         return self._mask & InotifyConstants.IN_ISDIR
+    
+    @property
+    def is_create_file(self):
+        return ~(self._mask & InotifyConstants.IN_ISDIR) and \
+            self._mask & InotifyConstants.IN_CREATE
+    
+    @property
+    def is_modify_file(self):
+        return ~(self._mask & InotifyConstants.IN_ISDIR) and \
+            self._mask & InotifyConstants.IN_MODIFY
     
     @property
     def is_create_dir(self):
@@ -110,6 +124,14 @@ class Worker(threading.Thread):
             logger.debug(f'Event {mask:08x}')
             event = InotifyEvent(wd, mask, cookie, name, src_path)
             event_list.append(event)
+
+            src_path_d = os.fsdecode(src_path)
+            if event.is_create_file:
+                if tracker.check_pattern(src_path_d):
+                    tracker.watch_file(src_path_d)
+            if event.is_modify_file:
+                if tracker.check_pattern(src_path_d):
+                    tracker.compare_file(src_path_d)
             
             if event.is_create_dir:
                 self._add_watch(src_path)

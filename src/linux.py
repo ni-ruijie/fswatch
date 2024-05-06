@@ -126,7 +126,7 @@ class audit_rule_data_struct(ctypes.Structure):
 libaudit = ctypes.CDLL(ctypes.util.find_library('audit'))
 
 audit_action_to_name = libaudit.audit_action_to_name
-audit_add_dir = libaudit.audit_add_dir
+# audit_add_dir = libaudit.audit_add_dir
 audit_add_rule_data = libaudit.audit_add_rule_data
 audit_add_watch = libaudit.audit_add_watch
 audit_add_watch_dir = libaudit.audit_add_watch_dir
@@ -193,8 +193,8 @@ audit_setloginuid = libaudit.audit_setloginuid
 audit_set_loginuid_immutable = libaudit.audit_set_loginuid_immutable
 audit_set_pid = libaudit.audit_set_pid
 audit_set_rate_limit = libaudit.audit_set_rate_limit
-audit_strsplit = libaudit.audit_strsplit
-audit_strsplit_r = libaudit.audit_strsplit_r
+# audit_strsplit = libaudit.audit_strsplit
+# audit_strsplit_r = libaudit.audit_strsplit_r
 audit_syscall_to_name = libaudit.audit_syscall_to_name
 audit_trim_subtrees = libaudit.audit_trim_subtrees
 audit_update_watch_perms = libaudit.audit_update_watch_perms
