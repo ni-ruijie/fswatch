@@ -5,25 +5,8 @@ import pika
 import errno
 import os
 import utils
-from utils import InotifyConstants
 from loguru import logger
-
-
-libc = ctypes.CDLL(None)
-
-inotify_init = libc.inotify_init
-inotify_add_watch = libc.inotify_add_watch
-inotify_rm_watch = libc.inotify_rm_watch
-
-
-class inotify_event_struct(ctypes.Structure):
-    _fields_ = [
-        ("wd", ctypes.c_int),
-        ("mask", ctypes.c_uint32),
-        ("cookie", ctypes.c_uint32),
-        ("len", ctypes.c_uint32),
-        ("name", ctypes.c_char_p),
-    ]
+from linux import *
 
 
 EVENT_SIZE = ctypes.sizeof(inotify_event_struct)
