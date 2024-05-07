@@ -9,6 +9,7 @@ from loguru import logger
 from linux import *
 from tracker import FileTracker
 from dispatcher import Dispatcher
+from controller import MonitorController
 import settings
 
 
@@ -81,11 +82,12 @@ class InotifyEvent:
 
 
 class Worker(threading.Thread):
-    def __init__(self, path, channel, watch_link=True):
+    def __init__(self, path, channel, controller, watch_link=True):
         super().__init__()
         self._stopped_event = threading.Event()
         self._path = os.fsencode(path)
         self._channel = channel
+        self._controller = controller
 
         self._lock = threading.Lock()
         self._fd = inotify_init()
@@ -129,7 +131,7 @@ class Worker(threading.Thread):
         event_list = []
         for wd, mask, cookie, name in self._parse_event_buffer(event_buffer):
             if mask & InotifyConstants.IN_Q_OVERFLOW:
-                # TODO: Log overflow event
+                self._controller.signal_inotify_overflow()
                 # NOTE: The entire queue is dropped when an overflow occurs
                 # NOTE: Overflow can be triggered by list(os.walk(link_loop, followlinks=True))
                 logger.critical('Queue overflow occurred')
@@ -267,9 +269,10 @@ class Worker(threading.Thread):
 
 def main(args):
     dispatcher = Dispatcher()
+    controller = MonitorController(dispatcher)
     logger.info(f'Monitoring {args.path}.')
 
-    worker = Worker(args.path, dispatcher)
+    worker = Worker(args.path, dispatcher, controller)
     worker.start()
     
     worker.join()
@@ -281,7 +284,5 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('path', type=str)
     args = parser.parse_args()
-
-    logger.info(f'Inotify info: {utils.get_inotify_info()}')
 
     main(args)
