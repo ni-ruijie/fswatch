@@ -4,6 +4,7 @@ import os.path as osp
 import configparser
 import csv
 import utils
+import warnings
 
 
 # .track
@@ -38,15 +39,17 @@ class FileTracker:
     """
     # TODO: Be thread-safe
     # TODO: Support more formats than INI
+    # TODO: (Optional) Optimize diff tree, e.g., 1 -> 2 -> 1 could be 2 <- 1 -> 1
     def __init__(self, cachedir: str, pattern: str, max_depth: int = -1) -> None:
         self._dir = cachedir
         self._backup_dir = osp.join(self._dir, 'backup')
         self._diff_dir = osp.join(self._dir, 'diff')
         self._index_file = osp.join(self._dir, 'index.csv')
         self._pat = pattern
+        self._max_depth = max_depth
 
         self._index = self._fid_for_path = self._nr_index = None
-        self.load_index()
+        self._load_index()
 
     def _load_index(self) -> None:
         self._index = {}
@@ -55,7 +58,9 @@ class FileTracker:
         # fid,path,version,format
         with open(self._index_file, 'r') as fi:
             reader = csv.reader(fi)
+            line = -1
             for line, (fid, path, version, format) in enumerate(reader):
+                fid, version = int(fid), int(version)
                 self._index[fid] = (line, path, version, format)
                 self._fid_for_path[path] = fid
             self._nr_index = line + 1
@@ -67,7 +72,7 @@ class FileTracker:
         line = self._nr_index
         self._nr_index += 1
         self._index[fid] = (line, path, version, format)
-        self._fid_for_path = fid
+        self._fid_for_path[path] = fid
         with open(self._index_file, 'a') as fo:
             writer = csv.writer(fo)
             writer.writerow((fid, path, version, format))
@@ -79,7 +84,12 @@ class FileTracker:
         _path = path or _path
         _version += version_inc
         self._index[fid] = (_line, _path, _version, _format)
-        # TODO: Replace one line of an index file
+        # TODO: Replace one line of an index file instead of full reflushing
+        with open(self._index_file, 'w') as fo:
+            writer = csv.writer(fo)
+            for fid, (line, path, version, format) in sorted(
+                    self._index.items(), key=lambda kv: kv[1][0]):
+                writer.writerow((fid, path, version, format))
 
     def _delete_index(self, fid: None) -> None:
         # TODO
@@ -89,7 +99,7 @@ class FileTracker:
         del self._fid_for_path[path]
 
     def _create_fid(self) -> int:
-        # TODO
+        # TODO: Use inode number or UID instead of line number
         return self._nr_index
 
     @staticmethod
@@ -97,7 +107,12 @@ class FileTracker:
         # TODO: Consider broken files (e.g., duplicate sections or keys)
         config = configparser.ConfigParser()
         config.read(path)
-        return config
+        ret = {}
+        for s in config:
+            ret[s] = {}
+            for k in config[s]:
+                ret[s][k] = config[s][k]
+        return ret
 
     @staticmethod
     def _diff_config(cfg1: dict, cfg2: dict) -> dict:
@@ -116,25 +131,27 @@ class FileTracker:
         for s in com_secs:
             mod = {'add': {}, 'del': {}, 'mod': {}}
             sec1, sec2 = cfg1[s], cfg2[s]
-            k1, k2 = set(sec1.keys(), sec2.keys())
+            k1, k2 = set(sec1.keys()), set(sec2.keys())
             add_keys = k2 - k1
             del_keys = k1 - k2
             com_keys = k1 & k2
-            if not add_keys and not del_keys and not com_keys:
-                continue
             for k in add_keys:
-                mod['add'][k] = k2[k]
+                mod['add'][k] = sec2[k]
             for k in del_keys:
-                mod['del'][k] = k1[k]
+                mod['del'][k] = sec1[k]
             for k in com_keys:
-                mod['mod'][k] = (k1[k], k2[k])
-            diff['mod'][s] = mod
-        return mod
+                if sec1[k] != sec2[k]:
+                    mod['mod'][k] = (sec1[k], sec2[k])
+            if mod['add'] or mod['del'] or mod['mod']:
+                diff['mod'][s] = mod
+        if diff['add'] or diff['del'] or diff['mod'] or diff['info']:
+            return diff
+        return {}
         
     @staticmethod
     def _reset_config(cfg: dict, diff: dict) -> dict:
         ret = {}
-        for s in cfg:
+        for s in set(cfg.keys()) | set(diff['del'].keys()):
             if s in diff['add']:
                 pass
             elif s in diff['del']:
@@ -142,17 +159,17 @@ class FileTracker:
             elif s in diff['mod']:
                 ret[s] = {}
                 sec1, sec2, secd = ret[s], cfg[s], diff['mod'][s]
-                for k in sec2:
+                for k in set(sec2.keys()) | set(secd['del'].keys()):
                     if k in secd['add']:
                         pass
                     elif k in secd['del']:
-                        sec1[k] = secd[k]
+                        sec1[k] = secd['del'][k]
                     elif k in secd['mod']:
-                        sec1[k] = secd[k][0]
+                        sec1[k] = secd['mod'][k][0]
                     else:
                         sec1[k] = sec2[k]
             else:
-                ret[s] = cfg
+                ret[s] = cfg[s]
         return ret
     
     def _get_head_path(self, fid: int) -> str:
@@ -161,7 +178,6 @@ class FileTracker:
     def _get_diff_path(self, fid: int, version: int = None) -> str:
         if version is None:
             _, _, version, _ = self._index[fid]
-            version += 1
         return osp.join(self._diff_dir, f'{fid}.{version}.json')
     
     # Operations
@@ -176,27 +192,37 @@ class FileTracker:
         fid = self._insert_index(path=path)
         utils.save_json(cfg, self._get_head_path(fid))
 
-    def compare_file(self, path: str) -> None:
-        """Compare current file with backup."""
+    def compare_file(self, path: str) -> bool:
+        """Compare current file with backup. Return True if updated."""
         fid = self._fid_for_path[path]
-        cfg1, cfg2 = self._get_backup(fid), self._read_config(path)
+        cfg1 = utils.load_json(self._get_head_path(fid))
+        cfg2 = self._read_config(path)
         diff = self._diff_config(cfg1, cfg2)
         if not diff:
-            return
-        self._update_index(fid)
+            return False
+        self._update_index(fid, version_inc=1)
+        utils.save_json(cfg2, self._get_head_path(fid))
         utils.save_json(diff, self._get_diff_path(fid))
+        return True
 
     def checkout_file(self, path: str, version: int) -> dict:
         """Checkout a specified version of a file and return as dict,
         without rewriting the file.
+        NOTE: Rows will not be recoverd to the orignal order.
         """
         if path not in self._fid_for_path:
             raise KeyError("File not being watched")
         fid = self._fid_for_path[path]
-        cfg = self._get_head_path(fid)
+        cfg = utils.load_json(self._get_head_path(fid))
 
         target_ver = version
         _, _, latest_ver, _ = self._index[fid]
+        if target_ver < 0 or target_ver > latest_ver:
+            raise ValueError(f"Invalid target version {target_ver}, "
+                             f"current version is {latest_ver}")
+        if latest_ver - target_ver > self._max_depth >= 0:
+            warnings.warn("Target version exceeds maximum version depth")
+
         for ver in range(latest_ver, target_ver, -1):
             diff = utils.load_json(self._get_diff_path(fid, ver))
             cfg = self._reset_config(cfg, diff)
@@ -204,9 +230,77 @@ class FileTracker:
         return cfg
 
 
+def _test_tracker():
+    import os, shutil
+    import settings
+    import pytest
+    files = (
+        '/home/user/test/configs/foo.ini',
+        '/home/user/test/configs/bar.ini'
+    )
+    
+    # Clear .track
+    tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
+    shutil.rmtree(tracker._backup_dir)
+    os.mkdir(tracker._backup_dir)
+    shutil.rmtree(tracker._diff_dir)
+    os.mkdir(tracker._diff_dir)
+    with open(tracker._index_file, 'w') as fo:
+        pass
+    
+    print('===  Basic Test  ===')
+    tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
+    print('Init')
+    print('Index', tracker._index)
+    with open(files[0], 'w') as fo:
+        pass
+    print('[Create]', files[0])
+    tracker.watch_file(files[0])
+    print('Watch', files[0])
+    with open(files[1], 'w') as fo:
+        print("""[example]
+              a = 1
+              b = 2
+              c = 3""", file=fo)
+    print('[Create]', files[1])
+    tracker.watch_file(files[1])
+    print('Watch', files[1])
+    print('Index', tracker._index)
+    print('Compare', tracker.compare_file(files[1]))
+    with open(files[1], 'w') as fo:
+        print("""[example]
+              b = 3
+              d = 4
+              [new]
+              a = 2""", file=fo)
+    print('[Modify]', files[1])
+    print('Compare', tracker.compare_file(files[1]))
+    print('Index', tracker._index)
+    with open(files[1], 'w') as fo:
+        print("""[example]
+              b = 3
+              c = 6""", file=fo)
+    print('[Modify]', files[1])
+    print('Compare', tracker.compare_file(files[1]))
+    print('Index', tracker._index)
+    
+    print('===  Version Test  ===')
+    print('Version', tracker.checkout_file(files[1], 0))
+
+    print('===  Durability Test  ===')
+    tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
+    print('Init')
+    print('Index', tracker._index)
+
+    print('===  Exception Test  ===')
+    with pytest.raises(KeyError):
+        tracker.checkout_file('', 0)
+    with pytest.raises(ValueError):
+        tracker.checkout_file(files[1], 4)
+
+
 if __name__ == '__main__':
-    tracker = FileTracker()
-    cfg1 = tracker.read_config('example.ini')
-    cfg2 = tracker.read_config('example.ini')
-    print(cfg1)
-    print(tracker.diff_config(cfg1, cfg2))
+    ret = input('Run a test on the tracker. '
+                'This will clear the .track directory. [y]/n: ')
+    if not ret or ret == 'y':
+        _test_tracker()
