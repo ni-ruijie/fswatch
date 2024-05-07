@@ -1,9 +1,9 @@
 import ctypes
 import struct
 import threading
-import pika
 import errno
 import os
+import os.path as osp
 import utils
 from loguru import logger
 from linux import *
@@ -53,6 +53,11 @@ class InotifyEvent:
             self._mask & InotifyConstants.IN_MODIFY
     
     @property
+    def is_delete_file(self):
+        return ~(self._mask & InotifyConstants.IN_ISDIR) and \
+            self._mask & InotifyConstants.IN_DELETE
+    
+    @property
     def is_create_dir(self):
         mask = InotifyConstants.IN_ISDIR | InotifyConstants.IN_CREATE
         return self._mask & mask >= mask
@@ -76,7 +81,7 @@ class InotifyEvent:
 
 
 class Worker(threading.Thread):
-    def __init__(self, path, channel):
+    def __init__(self, path, channel, watch_link=True):
         super().__init__()
         self._stopped_event = threading.Event()
         self._path = os.fsencode(path)
@@ -87,6 +92,11 @@ class Worker(threading.Thread):
         logger.debug(f'fd: {self._fd}')
         self._wd_for_path = {}
         self._path_for_wd = {}
+        # These are used for watching symbolic links
+        self._links_for_path = {}  # target -> list of links
+        self._path_for_link = {}  # link -> unique target
+
+        self._watch_link = watch_link
 
         self._add_dir_watch(self._path)
 
@@ -118,21 +128,37 @@ class Worker(threading.Thread):
         
         event_list = []
         for wd, mask, cookie, name in self._parse_event_buffer(event_buffer):
-            if mask & (InotifyConstants.IN_Q_OVERFLOW | InotifyConstants.IN_IGNORED):
+            if mask & InotifyConstants.IN_Q_OVERFLOW:
+                # TODO: Log overflow event
+                # NOTE: The entire queue is dropped when an overflow occurs
+                # NOTE: Overflow can be triggered by list(os.walk(link_loop, followlinks=True))
+                logger.critical('Queue overflow occurred')
                 continue
+            if mask & InotifyConstants.IN_IGNORED:
+                continue
+
             wd_path = self._path_for_wd[wd]
-            src_path = os.path.join(wd_path, name) if name else wd_path  # avoid trailing slash
-            logger.debug(f'Event {mask:08x}')
+            src_path = osp.join(wd_path, name) if name else wd_path  # avoid trailing slash
+            # logger.debug(f'Event {mask:08x}')
             event = InotifyEvent(wd, mask, cookie, name, src_path)
             event_list.append(event)
 
             src_path_d = os.fsdecode(src_path)
             if event.is_create_file:
-                if tracker.check_pattern(src_path_d):
+                if osp.islink(src_path):
+                    self._add_link_watch(src_path)
+                elif osp.isfile(src_path) and tracker.check_pattern(src_path_d):
                     tracker.watch_file(src_path_d)
-            if event.is_modify_file:
-                if tracker.check_pattern(src_path_d):
+            elif event.is_modify_file:
+                if osp.islink(src_path):  # e.g., ln -sfn
+                    self._rm_link_watch(src_path)
+                    self._add_link_watch(src_path)
+                elif osp.isfile(src_path) and tracker.check_pattern(src_path_d):
                     tracker.compare_file(src_path_d)
+            elif event.is_delete_file:
+                if src_path in self._path_for_link:
+                    self._rm_link_watch(src_path)
+                # TODO: handle deletion in file tracker
             
             if event.is_create_dir:
                 self._add_dir_watch(src_path)
@@ -142,20 +168,83 @@ class Worker(threading.Thread):
 
         return event_list
     
+    def _add_link_watch(self, src_path, mask=InotifyConstants.IN_ALL_EVENTS):
+        """
+        Note
+        ----
+        If a symbolic link is created before the target,
+        the link is ignored and the target will not be watched.
+        For example,
+        ```
+        ln -s bb a
+        mkdir bb
+        ```
+        """
+        if not self._watch_link:
+            return
+        
+        path = src_path
+        while osp.islink(path):
+            path = osp.abspath(osp.join(osp.split(path)[0], os.readlink(path)))
+            break  # TODO: recursively follow a link and detect possible loops
+        dest_path = path
+        if osp.islink(dest_path) or not osp.isdir(dest_path):
+            return  # TODO: consider linking a file
+        
+        if dest_path not in self._links_for_path:
+            self._links_for_path[dest_path] = set()
+            # Add a dummy link marked as None if dest was being watched
+            # so that it will still be watched when the real links are removed
+            if dest_path in self._wd_for_path:
+                self._links_for_path[dest_path].add(None)
+            else:
+                self._add_dir_watch(dest_path, mask)
+        self._links_for_path[dest_path].add(src_path)
+        self._path_for_link[src_path] = dest_path
+        logger.debug(f'links: {self._links_for_path}')
+
+    def _rm_link_watch(self, link):
+        path = self._path_for_link[link]
+        del self._path_for_link[link]
+        self._links_for_path[path].remove(link)
+        if not self._links_for_path[path]:
+            del self._links_for_path[path]
+            self._rm_dir_watch(self._wd_for_path[path])
+        logger.debug(f'links: {self._links_for_path}')
+    
     def _add_dir_watch(self, path, mask=InotifyConstants.IN_ALL_EVENTS):
-        if not os.path.isdir(path):
+        if not osp.isdir(path):
             raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), path)
         self._add_watch(path, mask)
 
         for root, dirnames, _ in os.walk(path):
             for dirname in dirnames:
-                full_path = os.path.join(root, dirname)
-                if os.path.islink(full_path):  # TODO: To watch links or not?
-                    continue
-                self._add_watch(full_path, mask)
+                full_path = osp.join(root, dirname)
+                if not osp.islink(full_path):
+                    self._add_watch(full_path, mask)
+
+        for root, dirnames, filenames in os.walk(path):
+            for dirname in dirnames:
+                full_path = osp.join(root, dirname)
+                if osp.islink(full_path):
+                    self._add_link_watch(full_path, mask)
+            for filename in filenames:
+                full_path = osp.join(root, filename)
+                if osp.islink(full_path):
+                    self._add_link_watch(full_path, mask)
+
+    def _rm_dir_watch(self, wd):
+        path = self._path_for_wd[wd]
+        self._rm_watch(wd)
+        
+        for root, dirnames, _ in os.walk(path):
+            for dirname in dirnames:
+                full_path = osp.join(root, dirname)
+                if not osp.islink(full_path):
+                    self._rm_watch(self._wd_for_path[full_path])
+                # TODO: Remove links in the dir
         
     def _add_watch(self, path, mask=InotifyConstants.IN_ALL_EVENTS):
-        # TODO: Add and update watches recursively, both init and update
         # int inotify_add_watch(int fd, const char *pathname, uint32_t mask);
         wd = inotify_add_watch(self._fd, path, mask)
         assert wd != -1
