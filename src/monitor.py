@@ -8,6 +8,7 @@ import utils
 from loguru import logger
 from linux import *
 from tracker import FileTracker
+from dispatcher import Dispatcher
 import settings
 
 
@@ -173,23 +174,18 @@ class Worker(threading.Thread):
     def run(self):
         while not self._stopped_event.is_set():
             for event in self._read_events():
-                self._channel.basic_publish(exchange='logs', routing_key='', body=str(event))
+                self._channel.emit(self._channel.gen_data_msg(msg=str(event)))
 
 
 def main(args):
-    connection = pika.BlockingConnection(
-        pika.ConnectionParameters(host='localhost', heartbeat=0))
-    channel = connection.channel()
-
-    channel.exchange_declare(exchange='logs', exchange_type='fanout')
-
+    dispatcher = Dispatcher()
     logger.info(f'Monitoring {args.path}.')
 
-    worker = Worker(args.path, channel)
+    worker = Worker(args.path, dispatcher)
     worker.start()
     
     worker.join()
-    connection.close()
+    dispatcher.close()
 
 
 if __name__ == '__main__':
