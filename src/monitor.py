@@ -135,8 +135,7 @@ class Worker(threading.Thread):
                     tracker.compare_file(src_path_d)
             
             if event.is_create_dir:
-                self._add_watch(src_path)
-                # FIXME: consider mkdir -p
+                self._add_dir_watch(src_path)
             
             elif event.is_delete_dir:
                 self._rm_watch(wd)
