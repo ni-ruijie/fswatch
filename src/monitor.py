@@ -267,7 +267,6 @@ class Worker(threading.Thread):
     def run(self):
         while not self._stopped_event.is_set():
             for event in self._read_events():
-                continue
                 self._channel.emit(self._channel.gen_data_msg(msg=str(event)))
 
 

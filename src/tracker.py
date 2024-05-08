@@ -260,7 +260,18 @@ class FileTracker:
 def _test_tracker():
     import os, shutil
     import settings
-    import pytest
+    # from pytest import raises
+    class raises:
+        def __init__(self, expected_exception):
+            self._expected = expected_exception
+        def __enter__(self):
+            pass
+        def __exit__(self, exc_type, exc_value, traceback):
+            if exc_type is None:
+                raise Exception('No exception')
+            if exc_type == self._expected:
+                return True
+
     files = (
         '/home/user/test/configs/foo.ini',
         '/home/user/test/configs/bar.ini'
@@ -334,9 +345,9 @@ def _test_tracker():
     print('Compare', tracker.compare_file(files[0]))
 
     print('===  Exception Test  ===')
-    with pytest.raises(KeyError):
+    with raises(KeyError):
         tracker.checkout_file('', 0)
-    with pytest.raises(FileNotFoundError):
+    with raises(FileNotFoundError):
         tracker.checkout_file(files[0], 0)
 
 

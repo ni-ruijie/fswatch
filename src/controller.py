@@ -39,7 +39,7 @@ class BaseMeter:
         pass
     
 
-class SlidingAvereageMeter(BaseMeter):
+class SlidingAverageMeter(BaseMeter):
     def __init__(self, duration: int | float) -> None:
         super().__init__()
         self._queue = deque()
@@ -89,7 +89,7 @@ class IntervalScheduler(Thread):
     """
     def __init__(self, callback: Callable[[], float], init_interval: int,
                  min_interval: int = None, max_interval: int = None,
-                 stats: Iterable[SlidingAvereageMeter] = None) -> None:
+                 stats: Iterable[SlidingAverageMeter] = None) -> None:
         super().__init__()
 
         self._callback = callback
@@ -160,9 +160,9 @@ class MonitorController:
         self._warned_overflow = False
         duration = settings.basic_controller_interval
         self._stats = {
-            self.OVERFlOW: SlidingAvereageMeter(duration),
-            self.READ: SlidingAvereageMeter(duration),
-            self.EVENT: SlidingAvereageMeter(duration)
+            self.OVERFlOW: SlidingAverageMeter(duration),
+            self.READ: SlidingAverageMeter(duration),
+            self.EVENT: SlidingAverageMeter(duration)
         }
         self._check_scheduler = IntervalScheduler(
             self._warn_limits, duration, max_interval=duration*24)
