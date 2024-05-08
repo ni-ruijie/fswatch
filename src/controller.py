@@ -11,18 +11,28 @@ import os
 import os.path as osp
 from collections import deque
 from time import time
-from typing import Iterable
+from threading import Thread, Lock, Event
+from typing import Iterable, Callable, Final, Literal
+from loguru import logger
 from dispatcher import BaseDispatcher
+import settings
+
+
+EPS = 1e-8
 
 
 class BaseMeter:
     def __init__(self) -> None:
         self._prev = None
 
-    def update(self, value: int | float) -> None:
+    def update(self, value: int | float = None) -> None:
         pass
 
     def get_prev(self) -> dict:
+        if self._prev is None:
+            self.get()
+        else:
+            self.update()
         return self._prev
 
     def get(self) -> dict:
@@ -34,7 +44,6 @@ class SlidingAvereageMeter(BaseMeter):
         super().__init__()
         self._queue = deque()
         self._duration = duration
-        self._prev = None
 
     @property
     def duration(self):
@@ -45,18 +54,17 @@ class SlidingAvereageMeter(BaseMeter):
             pass  # TODO: increase duration by time
         self._duration = duration
 
-    def update(self, value: int | float) -> None:
+    def update(self, value: int | float = None) -> None:
         now = time()
-        self._queue.append((now, value))
-        while self._queue[0][0] <= now - self._duration:
+        if value is not None:
+            self._queue.append((now, value))
+        while self._queue and self._queue[0][0] <= now - self._duration:
             self._queue.popleft()
 
-    def get_prev(self) -> dict:
-        return self._prev
-
     def get(self) -> dict:
+        self.update()
         tot = sum(x[1] for x in self._queue)
-        avg = tot / len(self._queue)
+        avg = tot / (len(self._queue) + EPS)
         self._prev = {'sum': tot, 'avg': avg}
         return self._prev
     
@@ -65,7 +73,7 @@ class MovingAverageMeter(BaseMeter):
     pass
 
 
-class IntervalScheduler:
+class IntervalScheduler(Thread):
     """
     Schedules the frequency of messages dynamically.
 
@@ -79,30 +87,60 @@ class IntervalScheduler:
     init_interval: int
         The initial interval duration.
     """
-    def __init__(self, callback: function, init_interval: int,
+    def __init__(self, callback: Callable[[], float], init_interval: int,
                  min_interval: int = None, max_interval: int = None,
-                 stats: Iterable = None) -> None:
+                 stats: Iterable[SlidingAvereageMeter] = None) -> None:
+        super().__init__()
+
         self._callback = callback
         self._interval = init_interval
         self._min_interval = init_interval if min_interval is None else min_interval
         self._max_interval = init_interval if max_interval is None else max_interval
+        if self._interval < self._min_interval or self._interval > self._max_interval \
+                or self._min_interval < 1:
+            raise ValueError("Bad interval values")
         self._stats = stats or []
 
+        self._lock = Lock()
+        self._stopped_event = Event()
+        self._cur_time = 0
+
     def start(self) -> None:
-        # TODO: Add timer
-        pass
+        self._cur_time = time()
+        super().start()
+
+    def run(self) -> None:
+        timeout = self._interval
+        while not self._stopped_event.is_set():
+            if not self._stopped_event.wait(timeout):
+                priority = self._callback()
+                if priority < 0:
+                    self.increase()
+                elif priority > 0:
+                    self.decrease()
+                if priority:
+                    logger.debug(f'{self} Priority {priority} Interval {self._interval}')
+
+                now = time()
+                timeout = self._cur_time + self._interval - now
+                # FIXME: # Only in case callback takes more than an interval to complete
+                if timeout <= 0:
+                    timeout = self._min_interval
+
+    def stop(self) -> None:
+        self._stopped_event.set()
 
     def _update_stats(self) -> None:
-        for stat in self.stats:
+        for stat in self._stats:
             stat.reset_duration(self._interval)
 
     def increase(self) -> int:
-        self._interval = max(self._min_interval, self._interval // 2)
+        self._interval = min(self._max_interval, self._interval * 2)
         self._update_stats()
         return self._interval
 
     def decrease(self) -> int:
-        self._interval = min(self._max_interval, self._interval * 2)
+        self._interval = max(self._min_interval, self._interval // 2)
         self._update_stats()
         return self._interval
 
@@ -112,24 +150,33 @@ class IntervalScheduler:
 
 
 class MonitorController:
+    OVERFlOW: Final = 'n_overflows'
+    READ: Final = 'n_reads'
+    EVENT: Final = 'n_events'
+
     def __init__(self, dispatcher: BaseDispatcher) -> None:
         self._dispatcher = dispatcher
         # By using this flag, we want overflow be instantly but not frequenty notified
         self._warned_overflow = False
-        self._check_scheduler = IntervalScheduler(
-            self._warn_limits, 60*60, max_interval=24*60*60)
-        self._stats_scheduler = IntervalScheduler(
-            self._notify_stats, 60*60, 10*60, 24*60*60)
+        duration = settings.basic_controller_interval
         self._stats = {
-            'n_overflows': SlidingAvereageMeter(self._duration),
-            'n_reads': SlidingAvereageMeter(self._duration),
-            'n_events': SlidingAvereageMeter(self._duration)
+            self.OVERFlOW: SlidingAvereageMeter(duration),
+            self.READ: SlidingAvereageMeter(duration),
+            self.EVENT: SlidingAvereageMeter(duration)
         }
-        self._default_threshold = 0.9
+        self._check_scheduler = IntervalScheduler(
+            self._warn_limits, duration, max_interval=duration*24)
+        self._stats_scheduler = IntervalScheduler(
+            self._notify_stats, duration, duration//6, duration*24, stats=self._stats.values())
+        self._schedulers = {
+            'check': self._check_scheduler,
+            'stats': self._stats_scheduler
+        }
+        self._default_threshold = settings.controller_limit_threshold
         self._thresholds = {}
 
-        self._check_scheduler.start()
-        self._stats_scheduler.start()
+        for scheduler in self._schedulers.values():
+            scheduler.start()
 
     @staticmethod
     def get_inotify_procs() -> dict:
@@ -177,9 +224,11 @@ class MonitorController:
 
         return fields
     
-    def signal_inotify_overflow(self, num: int = 1) -> None:
-        self._stats['n_overflows'].update(num)
-        if not self._warned_overflow:
+    def signal_inotify_stats(self, name: str, num: int = 1) -> None:
+        if name not in self._stats:
+            raise KeyError(f"Unknown key {name}")
+        self._stats[name].update(num)
+        if name == self.OVERFlOW and not self._warned_overflow:
             self._dispatcher.emit(self._dispatcher.gen_data_msg(
                 msg='Inotify overflow occurred'))
             self._warned_overflow = True  # TODO: unset this flag sometime later
@@ -190,26 +239,29 @@ class MonitorController:
         watch_used = info['total_watches'] / info['max_user_watches']
         if instance_used > self._default_threshold or watch_used > self._default_threshold:
             self._dispatcher.emit(self._dispatcher.gen_data_msg(
-                msg=f'Used instances: {info['total_instances']} / {info['max_user_instances']}'
+                msg=f'Used instances: {info["total_instances"]} / {info["max_user_instances"]} '
                 f'({instance_used*100:.2f}%)\n'
-                f'Used watches: {info['total_watches']} / {info['max_user_watches']}'
+                f'Used watches: {info["total_watches"]} / {info["max_user_watches"]} '
                 f'({watch_used*100:.2f}%)'))
-            return -1
+            return -1  # lower the priority since we have already sent messages
         return 1
         
     def _notify_stats(self) -> float:
         sums = {stat: (self._stats[stat].get_prev()['sum'],
                        self._stats[stat].get()['sum']) for stat in self._stats}
-        prev_ope, ope = [sums['n_overflows'][i] / sums['n_events'][i] for i in range(2)]  # overflow per event
-        if sums['n_overflows'][1]:
+        prev_ope, ope = [sums[self.OVERFlOW][i] / (sums[self.EVENT][i] + EPS) \
+                         for i in range(2)]  # overflow per event
+        if sums[self.OVERFlOW][1]:
             self._dispatcher.emit(self._dispatcher.gen_data_msg(
-                msg=f'Over past {self._stats['n_overflows'].duration} secs: '
-                f'{sums['n_reads'][1]} reads, '
-                f'{sums['n_events'][1]} events, '
-                f'{sums['n_overflow'][1]} overflows'))
+                msg=f'Over past {self._stats[self.OVERFlOW].duration} secs: '
+                f'{sums[self.READ][1]} reads, '
+                f'{sums[self.EVENT][1]} events, '
+                f'{sums[self.OVERFlOW][1]} overflows'))
         if ope > prev_ope:
-            return 1
-        elif ope < prev_ope:
+            return 1  # the more overflow events, the higher priority
+        else:
             return -1
-        return 0
     
+    def close(self) -> None:
+        for scheduler in self._schedulers.values():
+            scheduler.stop()

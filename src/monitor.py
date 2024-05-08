@@ -8,7 +8,7 @@ import utils
 from loguru import logger
 from linux import *
 from tracker import FileTracker
-from dispatcher import Dispatcher
+from dispatcher import BaseDispatcher, Dispatcher
 from controller import MonitorController
 import settings
 
@@ -82,7 +82,8 @@ class InotifyEvent:
 
 
 class Worker(threading.Thread):
-    def __init__(self, path, channel, controller, watch_link=True):
+    def __init__(self, path: str, channel: BaseDispatcher,
+                 controller: MonitorController, watch_link: bool = True):
         super().__init__()
         self._stopped_event = threading.Event()
         self._path = os.fsencode(path)
@@ -127,11 +128,12 @@ class Worker(threading.Thread):
                 else:
                     raise
             break
-        
+        self._controller.signal_inotify_stats(self._controller.READ)
+
         event_list = []
         for wd, mask, cookie, name in self._parse_event_buffer(event_buffer):
             if mask & InotifyConstants.IN_Q_OVERFLOW:
-                self._controller.signal_inotify_overflow()
+                self._controller.signal_inotify_stats(self._controller.OVERFlOW)
                 # NOTE: The entire queue is dropped when an overflow occurs
                 # NOTE: Overflow can be triggered by list(os.walk(link_loop, followlinks=True))
                 logger.critical('Queue overflow occurred')
@@ -168,6 +170,7 @@ class Worker(threading.Thread):
             elif event.is_delete_dir:
                 self._rm_watch(wd)
 
+        self._controller.signal_inotify_stats(self._controller.EVENT, len(event_list))
         return event_list
     
     def _add_link_watch(self, src_path, mask=InotifyConstants.IN_ALL_EVENTS):
@@ -264,6 +267,7 @@ class Worker(threading.Thread):
     def run(self):
         while not self._stopped_event.is_set():
             for event in self._read_events():
+                continue
                 self._channel.emit(self._channel.gen_data_msg(msg=str(event)))
 
 
@@ -283,6 +287,20 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('path', type=str)
+
+    # Add settings.* to exec options
+    items = []
+    for item in dir(settings):
+        if not item.startswith('_'):
+            value = getattr(settings, item)
+            parser.add_argument(f'--{item}', type=type(value), default=None)
+            items.append(item)
+
     args = parser.parse_args()
+
+    for item in items:
+        if getattr(args, item) is not None:
+            setattr(settings, item, getattr(args, item))
+            logger.info(f'settings.{item} = {getattr(args, item)}')
 
     main(args)
