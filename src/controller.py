@@ -12,7 +12,7 @@ import os.path as osp
 from collections import deque
 from time import time
 from threading import Thread, Lock, Event
-from typing import Iterable, Callable, Final, Literal
+from typing import Iterable, Callable, Final, Union
 from loguru import logger
 from dispatcher import BaseDispatcher
 import settings
@@ -25,7 +25,7 @@ class BaseMeter:
     def __init__(self) -> None:
         self._prev = None
 
-    def update(self, value: int | float = None) -> None:
+    def update(self, value: Union[int, float] = None) -> None:
         pass
 
     def get_prev(self) -> dict:
@@ -40,7 +40,7 @@ class BaseMeter:
     
 
 class SlidingAverageMeter(BaseMeter):
-    def __init__(self, duration: int | float) -> None:
+    def __init__(self, duration: Union[int, float]) -> None:
         super().__init__()
         self._queue = deque()
         self._duration = duration
@@ -49,12 +49,12 @@ class SlidingAverageMeter(BaseMeter):
     def duration(self):
         return self._duration
 
-    def reset_duration(self, duration: int | float) -> None:
+    def reset_duration(self, duration: Union[int, float]) -> None:
         if duration > self._duration:
             pass  # TODO: increase duration by time
         self._duration = duration
 
-    def update(self, value: int | float = None) -> None:
+    def update(self, value: Union[int, float] = None) -> None:
         now = time()
         if value is not None:
             self._queue.append((now, value))
