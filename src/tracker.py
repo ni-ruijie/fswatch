@@ -17,6 +17,21 @@ import warnings
 #     : id1,path/to/file,2,INI
 
 
+def _create_dir(path: str) -> bool:
+    if osp.isdir(path):
+        return False
+    os.mkdir(path)
+    return True
+
+
+def _create_file(path: str) -> bool:
+    if osp.isfile(path):
+        return False
+    with open(path, 'w') as fo:
+        pass
+    return True
+
+
 class FileTracker:
     """
     File tracker with simple version control.
@@ -49,6 +64,12 @@ class FileTracker:
         self._max_depth = max_depth
 
         self._index = self._fid_for_path = self._nr_index = None
+
+        _create_dir(self._dir)
+        _create_dir(self._backup_dir)
+        _create_dir(self._diff_dir)
+        _create_file(self._index_file)
+
         self._load_index()
 
     def _load_index(self) -> None:
@@ -202,7 +223,13 @@ class FileTracker:
             return False
         self._update_index(fid, version_inc=1)
         utils.save_json(cfg2, self._get_head_path(fid))
-        utils.save_json(diff, self._get_diff_path(fid))
+        if self._max_depth != 0:
+            utils.save_json(diff, self._get_diff_path(fid))
+            # Find and remove out-of-date diff file
+            _, _, latest_ver, _ = self._index[fid]
+            diff_file = self._get_diff_path(fid, latest_ver - self._max_depth)
+            if self._max_depth > 0 and osp.exists(diff_file):
+                os.remove(diff_file)
         return True
 
     def checkout_file(self, path: str, version: int) -> dict:
@@ -240,13 +267,7 @@ def _test_tracker():
     )
     
     # Clear .track
-    tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
-    shutil.rmtree(tracker._backup_dir)
-    os.mkdir(tracker._backup_dir)
-    shutil.rmtree(tracker._diff_dir)
-    os.mkdir(tracker._diff_dir)
-    with open(tracker._index_file, 'w') as fo:
-        pass
+    shutil.rmtree(settings.cache_dir)
     
     print('===  Basic Test  ===')
     tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
@@ -292,11 +313,31 @@ def _test_tracker():
     print('Init')
     print('Index', tracker._index)
 
+    print('===  Version depth test  ===')
+    shutil.rmtree(settings.cache_dir)
+    print('[Clear]')
+    tracker = FileTracker(settings.cache_dir, settings.tracked_pattern, max_depth=1)
+    print('Init')
+    with open(files[0], 'w') as fo:
+        print("""[example]
+              a = 1""", file=fo)
+    print('[Create]', files[0])
+    tracker.watch_file(files[0])
+    print('Watch', files[0])
+    with open(files[0], 'a') as fo:
+        print('b = 2', file=fo)
+    print('[Modify]', files[0])
+    print('Compare', tracker.compare_file(files[0]))
+    with open(files[0], 'a') as fo:
+        print('c = 3', file=fo)
+    print('[Modify]', files[0])
+    print('Compare', tracker.compare_file(files[0]))
+
     print('===  Exception Test  ===')
     with pytest.raises(KeyError):
         tracker.checkout_file('', 0)
-    with pytest.raises(ValueError):
-        tracker.checkout_file(files[1], 4)
+    with pytest.raises(FileNotFoundError):
+        tracker.checkout_file(files[0], 0)
 
 
 if __name__ == '__main__':
