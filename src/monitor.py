@@ -82,11 +82,10 @@ class InotifyEvent:
 
 
 class Worker(threading.Thread):
-    def __init__(self, path: str, channel: BaseDispatcher,
+    def __init__(self, paths: list[str], channel: BaseDispatcher,
                  controller: MonitorController, watch_link: bool = True):
         super().__init__()
         self._stopped_event = threading.Event()
-        self._path = os.fsencode(path)
         self._channel = channel
         self._controller = controller
 
@@ -101,7 +100,8 @@ class Worker(threading.Thread):
 
         self._watch_link = watch_link
 
-        self._add_dir_watch(self._path)
+        for path in paths:
+            self._add_dir_watch(os.fsencode(path))
 
     def start(self):
         super().start()
@@ -272,7 +272,7 @@ class Worker(threading.Thread):
 
 def main(args):
     dispatcher = Dispatcher()
-    controller = MonitorController(dispatcher)
+    controller = MonitorController(dispatcher, tracker)
     logger.info(f'Monitoring {args.path}.')
 
     worker = Worker(args.path, dispatcher, controller)
@@ -285,7 +285,7 @@ def main(args):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('path', type=str)
+    parser.add_argument('path', type=str, nargs='+')
 
     # Add settings.* to exec options
     items = []

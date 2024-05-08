@@ -7,14 +7,17 @@
 # NOTE: inotify limits can be reassigned by
 #       `sysctl fs.inotify.max_user_watches=65536`
 
+import argparse
 import os
 import os.path as osp
 from collections import deque
 from time import time
 from threading import Thread, Lock, Event
+import sys
 from typing import Iterable, Callable, Final, Union
 from loguru import logger
 from dispatcher import BaseDispatcher
+from tracker import FileTracker
 import settings
 
 
@@ -149,13 +152,37 @@ class IntervalScheduler(Thread):
         return self._interval
 
 
+class Shell(Thread):
+    def __init__(self, callback: Callable[[str], None]) -> None:
+        super().__init__()
+        self._callback = callback
+        self._stopped_event = Event()
+        self._lock = Lock()
+
+    def run(self) -> None:
+        while not self._stopped_event.is_set():
+            with self._lock:
+                cmd = sys.stdin.readline().rstrip('\n')
+                if cmd:
+                    try:
+                        self._callback(cmd)
+                    except Exception as e:
+                        logger.error(e)
+
+    def query(self, prompt: str) -> str:
+        with self._lock:
+            ret = input(prompt)
+        return ret
+
+
 class MonitorController:
     OVERFlOW: Final = 'n_overflows'
     READ: Final = 'n_reads'
     EVENT: Final = 'n_events'
 
-    def __init__(self, dispatcher: BaseDispatcher) -> None:
+    def __init__(self, dispatcher: BaseDispatcher, tracker: FileTracker) -> None:
         self._dispatcher = dispatcher
+        self._tracker = tracker
         # By using this flag, we want overflow be instantly but not frequenty notified
         self._warned_overflow = False
         duration = settings.basic_controller_interval
@@ -177,6 +204,22 @@ class MonitorController:
 
         for scheduler in self._schedulers.values():
             scheduler.start()
+
+        self._shell = Shell(self.parse_cmd)
+        self._shell.start()
+
+    def parse_cmd(self, cmd: str) -> None:
+        name = cmd.split()[0]
+        if name == 'checkout':
+            parser = argparse.ArgumentParser()
+            parser.add_argument('path', type=str)
+            parser.add_argument('version', type=int)
+            args = parser.parse_args(cmd.split()[1:])
+            logger.success(self._tracker.checkout_file(args.path, args.version))
+        elif name == 'list_tracked':
+            logger.success(list(self._tracker._fid_for_path.keys()))
+        else:
+            logger.error(f'Command not recognized: {cmd}')
 
     @staticmethod
     def get_inotify_procs() -> dict:
@@ -265,3 +308,4 @@ class MonitorController:
     def close(self) -> None:
         for scheduler in self._schedulers.values():
             scheduler.stop()
+        self._shell.stop()

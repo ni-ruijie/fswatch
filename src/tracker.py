@@ -237,13 +237,14 @@ class FileTracker:
         without rewriting the file.
         NOTE: Rows will not be recoverd to the orignal order.
         """
+        path = osp.abspath(path)
         if path not in self._fid_for_path:
             raise KeyError("File not being watched")
         fid = self._fid_for_path[path]
         cfg = utils.load_json(self._get_head_path(fid))
 
-        target_ver = version
         _, _, latest_ver, _ = self._index[fid]
+        target_ver = version if version >= 0 else latest_ver + version
         if target_ver < 0 or target_ver > latest_ver:
             raise ValueError(f"Invalid target version {target_ver}, "
                              f"current version is {latest_ver}")
