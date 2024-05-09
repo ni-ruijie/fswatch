@@ -81,6 +81,7 @@ class Worker(threading.Thread):
                 logger.critical('Queue overflow occurred')
                 continue
             if mask & InotifyConstants.IN_IGNORED:
+                logger.warning('Event ignored')
                 continue
 
             wd_path = self._path_for_wd[wd]
@@ -94,17 +95,18 @@ class Worker(threading.Thread):
                 if osp.islink(src_path):
                     self._add_link_watch(src_path)
                 elif osp.isfile(src_path) and tracker.check_pattern(src_path_d):
-                    tracker.watch_file(src_path_d)
+                    tracker.watch_or_compare(src_path_d)
             elif event.is_modify_file:
                 if osp.islink(src_path):  # e.g., ln -sfn
                     self._rm_link_watch(src_path)
                     self._add_link_watch(src_path)
                 elif osp.isfile(src_path) and tracker.check_pattern(src_path_d):
-                    tracker.compare_file(src_path_d)
+                    tracker.watch_or_compare(src_path_d)
             elif event.is_delete_file:
                 if src_path in self._path_for_link:
                     self._rm_link_watch(src_path)
-                # TODO: handle deletion in file tracker
+                # NOTE: We do not record the deletion of a tracked file, and when
+                #       the file is created again, it is regarded as the previous one.
             
             if event.is_create_dir:
                 self._add_dir_watch(src_path)

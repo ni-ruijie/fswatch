@@ -1,11 +1,13 @@
 # For file tracking
 cache_dir = '.track'
 tracked_pattern = r'.*\.(ini|INI)'
+tracked_patterns = (r'.*\.(ini|INI)', r'.*\.py')
+tracked_filetypes = ('INI', 'GENERIC')
 
 # For message routing
 route_tags = ('logs', 'warnings')  # N destinations
 route_patterns = (r'.*', r'.*')  # N watching re patterns
-route_events = ('IN_ALL_EVENTS', 'EX_META')  # N watching events
+route_events = ('IN_ALL_EVENTS|EX_RENAME', 'EX_META')  # N watching events
 # TODO: route_types = ('', '')  # N watching types
 # TODO: route_formats = ('{event} {path}', '{msg}')  # N output formats
 

@@ -30,7 +30,7 @@ class InotifyEvent:
                 break  # TODO: Is it possible to have multiple user-space events?
 
     @classmethod
-    def from_other(self, other, mask=None, dest_path=None):
+    def from_other(cls, other, mask=None, dest_path=None):
         return InotifyEvent(
             other._wd,
             other._mask if mask is None else mask,

@@ -210,6 +210,8 @@ class MonitorController:
         self._default_threshold = settings.controller_limit_threshold
         self._thresholds = {}
 
+        self._lock = Lock()
+
         self._workers = []
 
         for scheduler in self._schedulers.values():
@@ -287,12 +289,16 @@ class MonitorController:
                     tag=tag, msg=msg))
     
     def signal_inotify_stats(self, name: str, num: int = 1) -> None:
-        if name not in self._stats:
-            raise KeyError(f"Unknown key {name}")
-        self._stats[name].update(num)
-        if name == self.OVERFlOW and not self._warned_overflow:
-            self._emit('Inotify overflow occurred')
-            self._warned_overflow = True  # TODO: unset this flag sometime later
+        Thread(target=self._signal_inotify_stats, args=(name, num)).start()
+
+    def _signal_inotify_stats(self, name: str, num: int = 1) -> None:
+        with self._lock:
+            if name not in self._stats:
+                raise KeyError(f"Unknown key {name}")
+            self._stats[name].update(num)
+            if name == self.OVERFlOW and not self._warned_overflow:
+                self._emit('Inotify overflow occurred')
+                self._warned_overflow = True  # TODO: unset this flag sometime later
 
     def _warn_limits(self) -> float:
         info = self.get_inotify_info()

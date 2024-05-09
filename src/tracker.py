@@ -5,6 +5,9 @@ import configparser
 import csv
 import utils
 import warnings
+from typing import Dict, List, Tuple
+from threading import Thread, Lock
+from loguru import logger
 
 
 # .track
@@ -32,6 +35,168 @@ def _create_file(path: str) -> bool:
     return True
 
 
+class File:
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    @classmethod
+    def from_file(cls, path: str):
+        return cls(cls._read(path))
+
+    @classmethod
+    def from_backup(cls, path: str):
+        return cls(utils.load_json(path))
+
+    @staticmethod
+    def _read(path: str) -> dict:
+        pass
+
+    def diff(self, other) -> dict:
+        return self._diff(self._data, other.data)
+
+    @staticmethod
+    def _diff(cfg1: dict, cfg2: dict) -> dict:
+        pass
+
+    def reset(self, diff: dict) -> dict:
+        return self._reset(self._data, diff)
+
+    @staticmethod
+    def _reset(cfg: dict, diff: dict) -> dict:
+        pass
+
+
+class IniFile(File):
+    @staticmethod
+    def _read(path: str) -> dict:
+        config = configparser.ConfigParser()
+        try:
+            config.read(path)
+        except configparser.Error as e:
+            logger.error(e)
+            return {}
+        ret = {}
+        for s in config:
+            ret[s] = {}
+            for k in config[s]:
+                ret[s][k] = config[s][k]
+        return ret
+
+    @staticmethod
+    def _diff(cfg1: dict, cfg2: dict) -> dict:
+        # TODO: (Optional) Track file renaming and section renaming
+        diff = {'add': {}, 'del': {}, 'mod': {}, 'info': {}}
+        # Compare section names
+        s1, s2 = set(cfg1.keys()), set(cfg2.keys())
+        add_secs = s2 - s1
+        del_secs = s1 - s2
+        com_secs = s1 & s2
+        for s in add_secs:
+            diff['add'][s] = cfg2[s]
+        for s in del_secs:
+            diff['del'][s] = cfg1[s]
+        # Compare each section
+        for s in com_secs:
+            mod = {'add': {}, 'del': {}, 'mod': {}}
+            sec1, sec2 = cfg1[s], cfg2[s]
+            k1, k2 = set(sec1.keys()), set(sec2.keys())
+            add_keys = k2 - k1
+            del_keys = k1 - k2
+            com_keys = k1 & k2
+            for k in add_keys:
+                mod['add'][k] = sec2[k]
+            for k in del_keys:
+                mod['del'][k] = sec1[k]
+            for k in com_keys:
+                if sec1[k] != sec2[k]:
+                    mod['mod'][k] = (sec1[k], sec2[k])
+            if mod['add'] or mod['del'] or mod['mod']:
+                diff['mod'][s] = mod
+        if diff['add'] or diff['del'] or diff['mod'] or diff['info']:
+            return diff
+        return {}
+
+    @staticmethod
+    def _reset(cfg: dict, diff: dict) -> dict:
+        ret = {}
+        for s in set(cfg.keys()) | set(diff['del'].keys()):
+            if s in diff['add']:
+                pass
+            elif s in diff['del']:
+                ret[s] = diff['del'][s]
+            elif s in diff['mod']:
+                ret[s] = {}
+                sec1, sec2, secd = ret[s], cfg[s], diff['mod'][s]
+                for k in set(sec2.keys()) | set(secd['del'].keys()):
+                    if k in secd['add']:
+                        pass
+                    elif k in secd['del']:
+                        sec1[k] = secd['del'][k]
+                    elif k in secd['mod']:
+                        sec1[k] = secd['mod'][k][0]
+                    else:
+                        sec1[k] = sec2[k]
+            else:
+                ret[s] = cfg[s]
+        return ret
+
+
+class GenericFile(File):
+    @staticmethod
+    def _read(path: str) -> dict:
+        try:
+            with open(path, 'r') as fi:
+                return {'lines': fi.readlines()}
+        except:
+            return {}
+
+    @staticmethod
+    def _diff(cfg1: dict, cfg2: dict) -> Dict[str, List[Tuple[int, str]]]:
+        """Myers diff algorithm."""
+
+        a, b = cfg1['lines'], cfg2['lines']
+        front = {1: (0, [])}
+
+        for d in range(0, len(a) + len(b) + 1):
+            for k in range(-d, d + 1, 2):
+                go_down = k == -d or (k != d and front[k - 1][0] < front[k + 1][0])
+
+                if go_down:
+                    old_x, history = front[k + 1]
+                    x = old_x
+                else:
+                    old_x, history = front[k - 1]
+                    x = old_x + 1
+                y = x - k
+
+                history = history[:]
+
+                if 1 <= y <= len(b) and go_down:
+                    history.append(('+', y - 1))
+                elif 1 <= x <= len(a):
+                    history.append(('-', x - 1))
+
+                while x < len(a) and y < len(b) and a[x] == b[y]:
+                    x += 1
+                    y += 1
+                    history.append(('*', x - 1))
+
+                if x >= len(a) and y >= len(b):
+                    ret = {'add': [], 'del': []}
+                    for t, line in history:
+                        if t == '+':
+                            ret['add'].append((line, b[line]))
+                        elif t == '-':
+                            ret['del'].append((line, a[line]))
+                    return ret
+
+                front[k] = x, history
+
+    @staticmethod
+    def _reset(cfg: dict, diff: dict) -> dict:
+        pass
+
+
 class FileTracker:
     """
     File tracker with simple version control.
@@ -52,7 +217,6 @@ class FileTracker:
     compare_file
     checkout_file
     """
-    # TODO: Be thread-safe
     # TODO: Support more formats than INI
     # TODO: (Optional) Optimize diff tree, e.g., 1 -> 2 -> 1 could be 2 <- 1 -> 1
     def __init__(self, cachedir: str, pattern: str, max_depth: int = -1) -> None:
@@ -64,6 +228,8 @@ class FileTracker:
         self._max_depth = max_depth
 
         self._index = self._fid_for_path = self._nr_index = None
+
+        self._lock = Lock()
 
         _create_dir(self._dir)
         _create_dir(self._backup_dir)
@@ -125,73 +291,15 @@ class FileTracker:
 
     @staticmethod
     def _read_config(path: str) -> dict:
-        # TODO: Consider broken files (e.g., duplicate sections or keys)
-        config = configparser.ConfigParser()
-        config.read(path)
-        ret = {}
-        for s in config:
-            ret[s] = {}
-            for k in config[s]:
-                ret[s][k] = config[s][k]
-        return ret
+        return IniFile._read(path)
 
     @staticmethod
     def _diff_config(cfg1: dict, cfg2: dict) -> dict:
-        # TODO: (Optional) Track file renaming and section renaming
-        diff = {'add': {}, 'del': {}, 'mod': {}, 'info': {}}
-        # Compare section names
-        s1, s2 = set(cfg1.keys()), set(cfg2.keys())
-        add_secs = s2 - s1
-        del_secs = s1 - s2
-        com_secs = s1 & s2
-        for s in add_secs:
-            diff['add'][s] = cfg2[s]
-        for s in del_secs:
-            diff['del'][s] = cfg1[s]
-        # Compare each section
-        for s in com_secs:
-            mod = {'add': {}, 'del': {}, 'mod': {}}
-            sec1, sec2 = cfg1[s], cfg2[s]
-            k1, k2 = set(sec1.keys()), set(sec2.keys())
-            add_keys = k2 - k1
-            del_keys = k1 - k2
-            com_keys = k1 & k2
-            for k in add_keys:
-                mod['add'][k] = sec2[k]
-            for k in del_keys:
-                mod['del'][k] = sec1[k]
-            for k in com_keys:
-                if sec1[k] != sec2[k]:
-                    mod['mod'][k] = (sec1[k], sec2[k])
-            if mod['add'] or mod['del'] or mod['mod']:
-                diff['mod'][s] = mod
-        if diff['add'] or diff['del'] or diff['mod'] or diff['info']:
-            return diff
-        return {}
+        return IniFile._diff(cfg1, cfg2)
         
     @staticmethod
     def _reset_config(cfg: dict, diff: dict) -> dict:
-        ret = {}
-        for s in set(cfg.keys()) | set(diff['del'].keys()):
-            if s in diff['add']:
-                pass
-            elif s in diff['del']:
-                ret[s] = diff['del'][s]
-            elif s in diff['mod']:
-                ret[s] = {}
-                sec1, sec2, secd = ret[s], cfg[s], diff['mod'][s]
-                for k in set(sec2.keys()) | set(secd['del'].keys()):
-                    if k in secd['add']:
-                        pass
-                    elif k in secd['del']:
-                        sec1[k] = secd['del'][k]
-                    elif k in secd['mod']:
-                        sec1[k] = secd['mod'][k][0]
-                    else:
-                        sec1[k] = sec2[k]
-            else:
-                ret[s] = cfg[s]
-        return ret
+        return IniFile._reset(cfg, diff)
     
     def _get_head_path(self, fid: int) -> str:
         return osp.join(self._backup_dir, f'{fid}.json')
@@ -206,18 +314,32 @@ class FileTracker:
     def check_pattern(self, path: str) -> bool:
         return re.fullmatch(self._pat, osp.abspath(path)) or \
             re.fullmatch(self._pat, osp.relpath(path))
+    
+    def watch_or_compare(self, path: str) -> None:
+        Thread(target=self._watch_or_compare, args=(path,)).start()
+    
+    def _watch_or_compare(self, path: str) -> None:
+        with self._lock:
+            if path in self._fid_for_path:
+                self._compare_file(path)
+            else:
+                self._watch_file(path)
 
-    def watch_file(self, path: str) -> None:
+    def _watch_file(self, path: str) -> None:
         """Start tracking a file."""
         cfg = self._read_config(path)
+        if not cfg:
+            return
         fid = self._insert_index(path=path)
         utils.save_json(cfg, self._get_head_path(fid))
 
-    def compare_file(self, path: str) -> bool:
+    def _compare_file(self, path: str) -> bool:
         """Compare current file with backup. Return True if updated."""
         fid = self._fid_for_path[path]
         cfg1 = utils.load_json(self._get_head_path(fid))
         cfg2 = self._read_config(path)
+        if not cfg2:
+            return False
         diff = self._diff_config(cfg1, cfg2)
         if not diff:
             return False
