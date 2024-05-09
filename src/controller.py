@@ -116,19 +116,23 @@ class IntervalScheduler(Thread):
         timeout = self._interval
         while not self._stopped_event.is_set():
             if not self._stopped_event.wait(timeout):
+                self._cur_time = time()
                 priority = self._callback()
+                _prev_interval = self._interval
                 if priority < 0:
                     self.increase()
                 elif priority > 0:
                     self.decrease()
-                if priority:
-                    logger.debug(f'{self} Priority {priority} Interval {self._interval}')
+                if self._interval != _prev_interval:
+                    logger.debug(f'{self} Interval {_prev_interval} -> {self._interval}')
 
                 now = time()
                 timeout = self._cur_time + self._interval - now
-                # FIXME: # Only in case callback takes more than an interval to complete
+                # XXX: Only in case callback takes more than an interval to complete
                 if timeout <= 0:
+                    logger.error(f'{self} Negative timeout {timeout}')
                     timeout = self._min_interval
+
 
     def stop(self) -> None:
         self._stopped_event.set()
@@ -173,6 +177,9 @@ class Shell(Thread):
         with self._lock:
             ret = input(prompt)
         return ret
+    
+    def stop(self):
+        self._stopped_event.set()
 
 
 class MonitorController:
@@ -202,6 +209,8 @@ class MonitorController:
         self._default_threshold = settings.controller_limit_threshold
         self._thresholds = {}
 
+        self._workers = []
+
         for scheduler in self._schedulers.values():
             scheduler.start()
 
@@ -210,7 +219,10 @@ class MonitorController:
 
     def parse_cmd(self, cmd: str) -> None:
         name = cmd.split()[0]
-        if name == 'checkout':
+        if name == 'exit':
+            logger.info('Exiting')
+            self.close()
+        elif name == 'checkout':
             parser = argparse.ArgumentParser()
             parser.add_argument('path', type=str)
             parser.add_argument('version', type=int)
@@ -273,7 +285,9 @@ class MonitorController:
         self._stats[name].update(num)
         if name == self.OVERFlOW and not self._warned_overflow:
             self._dispatcher.emit(self._dispatcher.gen_data_msg(
-                msg='Inotify overflow occurred'))
+                tag='warnings',
+                msg='Inotify overflow occurred'
+            ))
             self._warned_overflow = True  # TODO: unset this flag sometime later
 
     def _warn_limits(self) -> float:
@@ -282,10 +296,12 @@ class MonitorController:
         watch_used = info['total_watches'] / info['max_user_watches']
         if instance_used > self._default_threshold or watch_used > self._default_threshold:
             self._dispatcher.emit(self._dispatcher.gen_data_msg(
+                tag='warnings',
                 msg=f'Used instances: {info["total_instances"]} / {info["max_user_instances"]} '
-                f'({instance_used*100:.2f}%)\n'
-                f'Used watches: {info["total_watches"]} / {info["max_user_watches"]} '
-                f'({watch_used*100:.2f}%)'))
+                    f'({instance_used*100:.2f}%)\n'
+                    f'Used watches: {info["total_watches"]} / {info["max_user_watches"]} '
+                    f'({watch_used*100:.2f}%)'
+            ))
             return -1  # lower the priority since we have already sent messages
         return 1
         
@@ -296,16 +312,23 @@ class MonitorController:
                          for i in range(2)]  # overflow per event
         if sums[self.OVERFlOW][1]:
             self._dispatcher.emit(self._dispatcher.gen_data_msg(
+                tag='warnings',
                 msg=f'Over past {self._stats[self.OVERFlOW].duration} secs: '
-                f'{sums[self.READ][1]} reads, '
-                f'{sums[self.EVENT][1]} events, '
-                f'{sums[self.OVERFlOW][1]} overflows'))
+                    f'{sums[self.READ][1]} reads, '
+                    f'{sums[self.EVENT][1]} events, '
+                    f'{sums[self.OVERFlOW][1]} overflows'
+            ))
         if ope > prev_ope:
             return 1  # the more overflow events, the higher priority
         else:
             return -1
+        
+    def add_worker(self, worker) -> None:
+        self._workers.append(worker)
     
     def close(self) -> None:
+        for worker in self._workers:
+            worker.stop()
         for scheduler in self._schedulers.values():
             scheduler.stop()
         self._shell.stop()

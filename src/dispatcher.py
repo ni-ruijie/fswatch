@@ -1,6 +1,7 @@
 # Stub classes and functions for dispatching messages
 
 import settings
+from typing import Iterable
 
 
 class BaseDispatcher:
@@ -10,7 +11,7 @@ class BaseDispatcher:
     def emit(self, data: dict) -> None:
         pass
 
-    def gen_data_msg(self, tag: str = '', group: str = '',
+    def gen_data_msg(self, tag: str = 'logs', group: str = '',
                      title: str = '', msg: str = '') -> dict:
         return dict(
             tag=tag,
@@ -24,19 +25,23 @@ class BaseDispatcher:
 
 
 class LocalDispatcher(BaseDispatcher):
-    def __init__(self) -> None:
-        self._f = open('.fswatch.buf', 'ab')
+    def __init__(self, tags: Iterable[str] = ('logs', 'warnings')) -> None:
+        self._fs = {}
+        for tag in tags:
+            self._fs[tag] = open(f'.fswatch.{tag}.buf', 'ab')
 
     def emit(self, data: dict) -> None:
-        self._f.write((data['msg'] + '\n').encode())
-        self._f.flush()
+        f = self._fs[data['tag']]
+        f.write((data['msg'] + '\n').encode())
+        f.flush()
 
     def close(self) -> None:
-        self._f.close()
+        for f in self._fs.values():
+            f.close()
 
 
 class RabbitDispatcher(BaseDispatcher):
-    def __init__(self) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         import pika
         self._connection = pika.BlockingConnection(
             pika.ConnectionParameters(host='localhost', heartbeat=0))

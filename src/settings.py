@@ -3,6 +3,9 @@ cache_dir = '.track'
 tracked_pattern = r'.*\.(ini|INI)'
 
 # For message routing
+tags = ('logs', 'warnings')  # N destinations
+patterns = (r'.*', r'.*')  # N watching re patterns
+events = ('IN_ALL_EVENTS', 'META_META')  # N watching events
 
 # For controller
 basic_controller_interval = 3600

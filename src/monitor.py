@@ -88,6 +88,7 @@ class Worker(threading.Thread):
         self._stopped_event = threading.Event()
         self._channel = channel
         self._controller = controller
+        self._controller.add_worker(self)
 
         self._lock = threading.Lock()
         self._fd = inotify_init()
@@ -269,6 +270,9 @@ class Worker(threading.Thread):
             for event in self._read_events():
                 self._channel.emit(self._channel.gen_data_msg(msg=str(event)))
 
+    def stop(self):
+        self._stopped_event.set()
+
 
 def main(args):
     dispatcher = Dispatcher()
@@ -284,6 +288,7 @@ def main(args):
 
 if __name__ == '__main__':
     import argparse
+    from collections.abc import Iterable
     parser = argparse.ArgumentParser()
     parser.add_argument('path', type=str, nargs='+')
 
@@ -292,7 +297,10 @@ if __name__ == '__main__':
     for item in dir(settings):
         if not item.startswith('_'):
             value = getattr(settings, item)
-            parser.add_argument(f'--{item}', type=type(value), default=None)
+            if isinstance(value, Iterable):
+                parser.add_argument(f'--{item}', type=type(value[0]), nargs='*', default=None)
+            else:
+                parser.add_argument(f'--{item}', type=type(value), default=None)
             items.append(item)
 
     args = parser.parse_args()

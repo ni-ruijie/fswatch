@@ -274,8 +274,8 @@ def _test_tracker():
                 return True
 
     files = (
-        '/home/user/test/configs/foo.ini',
-        '/home/user/test/configs/bar.ini'
+        osp.expanduser('~/test/configs/foo.ini'),
+        osp.expanduser('~/test/configs/bar.ini')
     )
     
     # Clear .track

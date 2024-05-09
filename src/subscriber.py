@@ -3,41 +3,45 @@
 from threading import Thread
 import argparse
 import os
+from time import sleep
 from loguru import logger
 import settings
 
 
 class LocalObserver(Thread):
-    def __init__(self):
+    def __init__(self, tag):
         super().__init__()
-        self._f = open('.fswatch.buf', 'rb')
+        self._tag = tag
+        self._f = open(f'.fswatch.{tag}.buf', 'rb')
 
-        print('Waiting for logs. To exit press CTRL+C')
-        
+        print(f'Waiting for {tag}. To exit press CTRL+C')
+
         self.start()
 
     def run(self):
+        line = b''
         while True:
-            line = self._f.readline()
-            if line:
+            line += self._f.readline()
+            if line.endswith(b'\n'):
                 logger.info(line.decode().rstrip('\n'))
+                line = b''
 
 
 class RabbitObserver:
-    def __init__(self):
+    def __init__(self, tag):
         import pika
         connection = pika.BlockingConnection(
             pika.ConnectionParameters(host='localhost', heartbeat=0))
         channel = connection.channel()
 
-        channel.exchange_declare(exchange='logs', exchange_type='fanout')
+        channel.exchange_declare(exchange=tag, exchange_type='fanout')
 
         result = channel.queue_declare(queue='', exclusive=True)
         queue_name = result.method.queue
 
-        channel.queue_bind(exchange='logs', queue=queue_name)
+        channel.queue_bind(exchange=tag, queue=queue_name)
 
-        print('Waiting for logs. To exit press CTRL+C')
+        print(f'Waiting for {tag}. To exit press CTRL+C')
 
         def callback(ch, method, properties, body):
             logger.info(body.decode())
@@ -50,7 +54,8 @@ class RabbitObserver:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('-n', '--tag', type=str, default='logs')
     parser.add_argument('-d', '--dispatcher_type', type=str, default=settings.dispatcher_type)
     args = parser.parse_args()
     observers = {'local': LocalObserver, 'rabbitmq': RabbitObserver}
-    ob = observers[args.dispatcher_type]()
+    ob = observers[args.dispatcher_type](args.tag)
