@@ -4,13 +4,14 @@ import threading
 import errno
 import os
 import os.path as osp
-import re
-from typing import Iterable, List, Tuple, Iterator
+from typing import Iterable, List
 from loguru import logger
 from linux import *
 from tracker import FileTracker
 from dispatcher import BaseDispatcher, Dispatcher
 from controller import MonitorController
+from event import InotifyEvent
+from buffer import InotifyBuffer
 import settings
 
 
@@ -19,72 +20,6 @@ DEFAULT_NUM_EVENTS = 2048
 DEFAULT_EVENT_BUFFER_SIZE = DEFAULT_NUM_EVENTS * (EVENT_SIZE + 16)
 
 tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
-
-
-class InotifyEvent:
-    def __init__(self, wd, mask, cookie, name, src_path):
-        self._wd = wd
-        self._mask = mask
-        self._cookie = cookie
-        self._name = name
-        self._src_path = src_path
-
-        self._event_name = 'UNDEFINED'
-        lsb = self._mask & -self._mask
-        for event in (
-                'IN_ACCESS', 'IN_MODIFY', 'IN_ATTRIB', 'IN_CLOSE_WRITE',
-                'IN_CLOSE_NOWRITE','IN_OPEN', 'IN_MOVED_FROM', 'IN_MOVED_TO',
-                'IN_DELETE', 'IN_CREATE', 'IN_DELETE_SELF', 'IN_MOVE_SELF',
-                'IN_UNMOUNT', 'IN_Q_OVERFLOW', 'IN_IGNORED'):
-            if self._mask & getattr(InotifyConstants, event):
-                self._event_name = event
-                break  # TODO: Is it possible to have multiple user-space events?
-
-    def select_routes(self, routes: Iterable[Tuple[str, re.Pattern, int]]) -> Iterator[str]:
-        for tag, pattern, event in routes:
-            if event & self._mask and pattern.fullmatch(self._src_path):
-                yield tag
-
-    @property
-    def is_dir(self):
-        return self._mask & InotifyConstants.IN_ISDIR
-    
-    @property
-    def is_create_file(self):
-        return ~(self._mask & InotifyConstants.IN_ISDIR) and \
-            self._mask & InotifyConstants.IN_CREATE
-    
-    @property
-    def is_modify_file(self):
-        return ~(self._mask & InotifyConstants.IN_ISDIR) and \
-            self._mask & InotifyConstants.IN_MODIFY
-    
-    @property
-    def is_delete_file(self):
-        return ~(self._mask & InotifyConstants.IN_ISDIR) and \
-            self._mask & InotifyConstants.IN_DELETE
-    
-    @property
-    def is_create_dir(self):
-        mask = InotifyConstants.IN_ISDIR | InotifyConstants.IN_CREATE
-        return self._mask & mask >= mask
-    
-    @property
-    def is_delete_dir(self):
-        # mask = InotifyConstants.IN_ISDIR | InotifyConstants.IN_DELETE
-        mask = InotifyConstants.IN_DELETE_SELF
-        return self._mask & mask >= mask
-    
-    @property
-    def is_overflow(self):
-        return self._mask & InotifyConstants.IN_Q_OVERFLOW
-    
-    @property
-    def is_ignored(self):
-        return self._mask & InotifyConstants.IN_IGNORED
-
-    def __str__(self):
-        return f'{self._event_name} {os.fsdecode(self._src_path)}'
 
 
 class Worker(threading.Thread):
@@ -273,7 +208,7 @@ class Worker(threading.Thread):
 
     def run(self):
         while not self._stopped_event.is_set():
-            for event in self._read_events():
+            for event in InotifyBuffer._group_event(self._read_events()):
                 for tag in event.select_routes(self._channel.routes):
                     self._channel.emit(self._channel.gen_data_msg(tag=tag, msg=str(event)))
 

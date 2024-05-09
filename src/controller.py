@@ -19,7 +19,7 @@ from loguru import logger
 from dispatcher import BaseDispatcher
 from tracker import FileTracker
 import settings
-from utils import ExtendedInotifyConstants
+from event import ExtendedInotifyConstants
 
 
 EPS = 1e-8

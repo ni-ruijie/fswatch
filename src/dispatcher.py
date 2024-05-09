@@ -6,7 +6,7 @@ import re
 import os
 from functools import reduce
 from typing import List, Tuple, Iterator
-from utils import ExtendedInotifyConstants
+from event import ExtendedInotifyConstants
 from threading import Lock
 import settings
 
