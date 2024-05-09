@@ -4,7 +4,8 @@ import threading
 import errno
 import os
 import os.path as osp
-import utils
+import re
+from typing import Iterable, List, Tuple, Iterator
 from loguru import logger
 from linux import *
 from tracker import FileTracker
@@ -38,6 +39,11 @@ class InotifyEvent:
             if self._mask & getattr(InotifyConstants, event):
                 self._event_name = event
                 break  # TODO: Is it possible to have multiple user-space events?
+
+    def select_routes(self, routes: Iterable[Tuple[str, re.Pattern, int]]) -> Iterator[str]:
+        for tag, pattern, event in routes:
+            if event & self._mask and pattern.fullmatch(self._src_path):
+                yield tag
 
     @property
     def is_dir(self):
@@ -82,7 +88,7 @@ class InotifyEvent:
 
 
 class Worker(threading.Thread):
-    def __init__(self, paths: list[str], channel: BaseDispatcher,
+    def __init__(self, paths: List[str], channel: BaseDispatcher,
                  controller: MonitorController, watch_link: bool = True):
         super().__init__()
         self._stopped_event = threading.Event()
@@ -268,14 +274,15 @@ class Worker(threading.Thread):
     def run(self):
         while not self._stopped_event.is_set():
             for event in self._read_events():
-                self._channel.emit(self._channel.gen_data_msg(msg=str(event)))
+                for tag in event.select_routes(self._channel.routes):
+                    self._channel.emit(self._channel.gen_data_msg(tag=tag, msg=str(event)))
 
     def stop(self):
         self._stopped_event.set()
 
 
 def main(args):
-    dispatcher = Dispatcher()
+    dispatcher = Dispatcher(settings.route_tags)
     controller = MonitorController(dispatcher, tracker)
     logger.info(f'Monitoring {args.path}.')
 

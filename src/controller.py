@@ -19,6 +19,7 @@ from loguru import logger
 from dispatcher import BaseDispatcher
 from tracker import FileTracker
 import settings
+from utils import ExtendedInotifyConstants
 
 
 EPS = 1e-8
@@ -279,15 +280,18 @@ class MonitorController:
 
         return fields
     
+    def _emit(self, msg: str) -> None:
+        for tag, _, event in self._dispatcher.routes:
+            if event & ExtendedInotifyConstants.EX_META:
+                self._dispatcher.emit(self._dispatcher.gen_data_msg(
+                    tag=tag, msg=msg))
+    
     def signal_inotify_stats(self, name: str, num: int = 1) -> None:
         if name not in self._stats:
             raise KeyError(f"Unknown key {name}")
         self._stats[name].update(num)
         if name == self.OVERFlOW and not self._warned_overflow:
-            self._dispatcher.emit(self._dispatcher.gen_data_msg(
-                tag='warnings',
-                msg='Inotify overflow occurred'
-            ))
+            self._emit('Inotify overflow occurred')
             self._warned_overflow = True  # TODO: unset this flag sometime later
 
     def _warn_limits(self) -> float:
@@ -295,13 +299,12 @@ class MonitorController:
         instance_used = info['total_instances'] / info['max_user_instances']
         watch_used = info['total_watches'] / info['max_user_watches']
         if instance_used > self._default_threshold or watch_used > self._default_threshold:
-            self._dispatcher.emit(self._dispatcher.gen_data_msg(
-                tag='warnings',
-                msg=f'Used instances: {info["total_instances"]} / {info["max_user_instances"]} '
-                    f'({instance_used*100:.2f}%)\n'
-                    f'Used watches: {info["total_watches"]} / {info["max_user_watches"]} '
-                    f'({watch_used*100:.2f}%)'
-            ))
+            self._emit(
+                f'Used instances: {info["total_instances"]} / {info["max_user_instances"]} '
+                f'({instance_used*100:.2f}%)\n'
+                f'Used watches: {info["total_watches"]} / {info["max_user_watches"]} '
+                f'({watch_used*100:.2f}%)'
+            )
             return -1  # lower the priority since we have already sent messages
         return 1
         
@@ -311,13 +314,12 @@ class MonitorController:
         prev_ope, ope = [sums[self.OVERFlOW][i] / (sums[self.EVENT][i] + EPS) \
                          for i in range(2)]  # overflow per event
         if sums[self.OVERFlOW][1]:
-            self._dispatcher.emit(self._dispatcher.gen_data_msg(
-                tag='warnings',
-                msg=f'Over past {self._stats[self.OVERFlOW].duration} secs: '
-                    f'{sums[self.READ][1]} reads, '
-                    f'{sums[self.EVENT][1]} events, '
-                    f'{sums[self.OVERFlOW][1]} overflows'
-            ))
+            self._emit(
+                f'Over past {self._stats[self.OVERFlOW].duration} secs: '
+                f'{sums[self.READ][1]} reads, '
+                f'{sums[self.EVENT][1]} events, '
+                f'{sums[self.OVERFlOW][1]} overflows'
+            )
         if ope > prev_ope:
             return 1  # the more overflow events, the higher priority
         else:

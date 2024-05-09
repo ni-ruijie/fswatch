@@ -9,6 +9,7 @@ import settings
 
 
 class LocalObserver(Thread):
+    """Analog to `tail -f .fswatch.logs.buf`"""
     def __init__(self, tag):
         super().__init__()
         self._tag = tag

@@ -2,11 +2,29 @@
 
 import settings
 from typing import Iterable
+import re
+import os
+from functools import reduce
+from typing import List, Tuple, Iterator
+from utils import ExtendedInotifyConstants
+from threading import Lock
+import settings
+
+
+def parse_routes() -> Iterator[Tuple[str, re.Pattern, int]]:
+    for tag, pattern, event in zip(
+            settings.route_tags, settings.route_patterns, settings.route_events):
+        pattern = re.compile(os.fsencode(pattern))
+        event = reduce(
+            lambda x, y: x | y,
+            [getattr(ExtendedInotifyConstants, e) for e in event.split('|')]
+        )
+        yield (tag, pattern, event)
 
 
 class BaseDispatcher:
     def __init__(self) -> None:
-        pass
+        self.routes = list(parse_routes())
     
     def emit(self, data: dict) -> None:
         pass
@@ -25,15 +43,18 @@ class BaseDispatcher:
 
 
 class LocalDispatcher(BaseDispatcher):
-    def __init__(self, tags: Iterable[str] = ('logs', 'warnings')) -> None:
+    def __init__(self, tags: Iterable[str]) -> None:
+        super().__init__()
+        self._lock = Lock()
         self._fs = {}
         for tag in tags:
             self._fs[tag] = open(f'.fswatch.{tag}.buf', 'ab')
 
     def emit(self, data: dict) -> None:
         f = self._fs[data['tag']]
-        f.write((data['msg'] + '\n').encode())
-        f.flush()
+        with self._lock:
+            f.write((data['msg'] + '\n').encode())
+            f.flush()
 
     def close(self) -> None:
         for f in self._fs.values():
@@ -42,6 +63,7 @@ class LocalDispatcher(BaseDispatcher):
 
 class RabbitDispatcher(BaseDispatcher):
     def __init__(self, *args, **kwargs) -> None:
+        super().__init__()
         import pika
         self._connection = pika.BlockingConnection(
             pika.ConnectionParameters(host='localhost', heartbeat=0))
