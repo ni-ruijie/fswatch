@@ -5,9 +5,10 @@ import configparser
 import csv
 import utils
 import warnings
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, TypeVar
 from threading import Thread, Lock
 from loguru import logger
+import settings
 
 
 # .track
@@ -35,38 +36,73 @@ def _create_file(path: str) -> bool:
     return True
 
 
-class File:
+class BaseRecord:
     def __init__(self, data: dict) -> None:
         self._data = data
 
     @classmethod
-    def from_file(cls, path: str):
-        return cls(cls._read(path))
+    def from_backup(cls, path: str):
+        return cls(utils.load_json(path), path)
+    
+    def save(self, path: str) -> None:
+        utils.save_json(self._data, path)
+
+
+class FileDiff(BaseRecord):
+    def __init__(self, diff: dict, *args) -> None:
+        super().__init__(diff)
+
+    @property
+    def diff(self) -> dict:
+        return self._data
+
+    def __len__(self) -> int:  # used in `if diff` / `if not diff`
+        return len(self._data)
+
+
+class BaseFile(BaseRecord):
+    format = 'BASE'
+
+    def __init__(self, data: dict, path: str) -> None:
+        super().__init__(data)
+        self._path = path
+
+    @property
+    def path(self):
+        return self._path
 
     @classmethod
-    def from_backup(cls, path: str):
-        return cls(utils.load_json(path))
+    def from_file(cls, path: str):
+        return cls(cls._read(path), path)
 
     @staticmethod
     def _read(path: str) -> dict:
         pass
 
-    def diff(self, other) -> dict:
-        return self._diff(self._data, other.data)
+    def diff(self, other) -> FileDiff:
+        return FileDiff(self._diff(self._data, other._data))
 
     @staticmethod
     def _diff(cfg1: dict, cfg2: dict) -> dict:
         pass
 
-    def reset(self, diff: dict) -> dict:
-        return self._reset(self._data, diff)
+    def reset(self, diff: FileDiff):
+        return self.__class__(self._reset(self._data, diff.diff), self._path)
 
     @staticmethod
     def _reset(cfg: dict, diff: dict) -> dict:
         pass
 
+    def save(self, path: str):
+        utils.save_json(self._data, path)
 
-class IniFile(File):
+    def __str__(self) -> str:
+        return f'{self.__class__.__name__}: {self._data}'
+
+
+class IniFile(BaseFile):
+    format = 'INI'
+
     @staticmethod
     def _read(path: str) -> dict:
         config = configparser.ConfigParser()
@@ -141,13 +177,16 @@ class IniFile(File):
         return ret
 
 
-class GenericFile(File):
+class GenericFile(BaseFile):
+    format = 'GENERIC'
+    
     @staticmethod
     def _read(path: str) -> dict:
         try:
             with open(path, 'r') as fi:
                 return {'lines': fi.readlines()}
-        except:
+        except Exception as e:
+            logger.error(e)
             return {}
 
     @staticmethod
@@ -182,19 +221,38 @@ class GenericFile(File):
                     history.append(('*', x - 1))
 
                 if x >= len(a) and y >= len(b):
-                    ret = {'add': [], 'del': []}
+                    ret = {'add/del': []}
                     for t, line in history:
                         if t == '+':
-                            ret['add'].append((line, b[line]))
+                            ret['add/del'].append((t, line, b[line]))
                         elif t == '-':
-                            ret['del'].append((line, a[line]))
+                            ret['add/del'].append((t, line, a[line]))
                     return ret
 
                 front[k] = x, history
 
     @staticmethod
     def _reset(cfg: dict, diff: dict) -> dict:
-        pass
+        b = cfg['lines']
+        a = []
+        cur_line = 0
+        for t, mod_line, mod in diff['add/del']:
+            if t == '+':
+                for cur_line in range(cur_line, mod_line):
+                    a.append(b[cur_line])
+                cur_line = mod_line + 1
+            elif t == '-':
+                while len(a) < mod_line:
+                    a.append(b[cur_line])
+                    cur_line += 1
+                a.append(mod)
+        for cur_line in range(cur_line, len(b)):
+            a.append(b[cur_line])
+        return {'lines': a}
+    
+
+FileT = TypeVar('FileT', bound=BaseFile)
+_name_to_type: Dict[str, BaseFile] = {t.format: t for t in (IniFile, GenericFile)}
 
 
 class FileTracker:
@@ -219,12 +277,13 @@ class FileTracker:
     """
     # TODO: Support more formats than INI
     # TODO: (Optional) Optimize diff tree, e.g., 1 -> 2 -> 1 could be 2 <- 1 -> 1
-    def __init__(self, cachedir: str, pattern: str, max_depth: int = -1) -> None:
+    def __init__(self, cachedir: str, max_depth: int = -1) -> None:
         self._dir = cachedir
         self._backup_dir = osp.join(self._dir, 'backup')
         self._diff_dir = osp.join(self._dir, 'diff')
         self._index_file = osp.join(self._dir, 'index.csv')
-        self._pat = pattern
+        self._patterns = settings.tracked_patterns
+        self._filetypes: List[BaseFile] = [_name_to_type[name] for name in settings.tracked_filetypes]
         self._max_depth = max_depth
 
         self._index = self._fid_for_path = self._nr_index = None
@@ -311,42 +370,44 @@ class FileTracker:
     
     # Operations
 
-    def check_pattern(self, path: str) -> bool:
-        return re.fullmatch(self._pat, osp.abspath(path)) or \
-            re.fullmatch(self._pat, osp.relpath(path))
+    def _match_pattern(self, path: str) -> BaseFile:
+        for pattern, filetype in zip(
+                self._patterns, self._filetypes):
+            if re.fullmatch(pattern, osp.abspath(path)) or \
+                    re.fullmatch(pattern, osp.relpath(path)):
+                return filetype.from_file(path)
     
     def watch_or_compare(self, path: str) -> None:
         Thread(target=self._watch_or_compare, args=(path,)).start()
     
     def _watch_or_compare(self, path: str) -> None:
+        cfg = self._match_pattern(path)
+        if cfg is None:
+            return
         with self._lock:
             if path in self._fid_for_path:
-                self._compare_file(path)
+                self._compare_file(cfg)
             else:
-                self._watch_file(path)
+                self._watch_file(cfg)
 
-    def _watch_file(self, path: str) -> None:
+    def _watch_file(self, cfg: BaseFile) -> None:
         """Start tracking a file."""
-        cfg = self._read_config(path)
-        if not cfg:
-            return
-        fid = self._insert_index(path=path)
-        utils.save_json(cfg, self._get_head_path(fid))
+        path = cfg.path
+        fid = self._insert_index(path=path, format=cfg.format)
+        cfg.save(self._get_head_path(fid))
 
-    def _compare_file(self, path: str) -> bool:
+    def _compare_file(self, cfg2: BaseFile) -> bool:
         """Compare current file with backup. Return True if updated."""
+        path = cfg2.path
         fid = self._fid_for_path[path]
-        cfg1 = utils.load_json(self._get_head_path(fid))
-        cfg2 = self._read_config(path)
-        if not cfg2:
-            return False
-        diff = self._diff_config(cfg1, cfg2)
+        cfg1 = cfg2.__class__.from_backup(self._get_head_path(fid))
+        diff = cfg1.diff(cfg2)
         if not diff:
             return False
         self._update_index(fid, version_inc=1)
-        utils.save_json(cfg2, self._get_head_path(fid))
+        cfg2.save(self._get_head_path(fid))
         if self._max_depth != 0:
-            utils.save_json(diff, self._get_diff_path(fid))
+            diff.save(self._get_diff_path(fid))
             # Find and remove out-of-date diff file
             _, _, latest_ver, _ = self._index[fid]
             diff_file = self._get_diff_path(fid, latest_ver - self._max_depth)
@@ -363,9 +424,9 @@ class FileTracker:
         if path not in self._fid_for_path:
             raise KeyError("File not being watched")
         fid = self._fid_for_path[path]
-        cfg = utils.load_json(self._get_head_path(fid))
+        _, _, latest_ver, format = self._index[fid]
+        cfg = _name_to_type[format].from_backup(self._get_head_path(fid))
 
-        _, _, latest_ver, _ = self._index[fid]
         target_ver = version if version >= 0 else latest_ver + version
         if target_ver < 0 or target_ver > latest_ver:
             raise ValueError(f"Invalid target version {target_ver}, "
@@ -374,16 +435,25 @@ class FileTracker:
             warnings.warn("Target version exceeds maximum version depth")
 
         for ver in range(latest_ver, target_ver, -1):
-            diff = utils.load_json(self._get_diff_path(fid, ver))
-            cfg = self._reset_config(cfg, diff)
+            diff = FileDiff.from_backup(self._get_diff_path(fid, ver))
+            cfg = cfg.reset(diff)
         
         return cfg
+    
+
+def _test_generic():
+    a = GenericFile.from_file('/home/user/test/configs/aa.py')
+    print(a)
+    b = GenericFile.from_file('/home/user/test/configs/bb.py')
+    print(b)
+    diff = a.diff(b)
+    print(diff)
+    print(b.reset(diff))
 
 
 def _test_tracker():
     import os, shutil
     import settings
-    # from pytest import raises
     class raises:
         def __init__(self, expected_exception):
             self._expected = expected_exception
@@ -401,16 +471,17 @@ def _test_tracker():
     )
     
     # Clear .track
-    shutil.rmtree(settings.cache_dir)
+    if osp.isdir(settings.cache_dir):
+        shutil.rmtree(settings.cache_dir)
     
     print('===  Basic Test  ===')
-    tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
+    tracker = FileTracker(settings.cache_dir)
     print('Init')
     print('Index', tracker._index)
     with open(files[0], 'w') as fo:
         pass
     print('[Create]', files[0])
-    tracker.watch_file(files[0])
+    tracker.watch_or_compare(files[0])
     print('Watch', files[0])
     with open(files[1], 'w') as fo:
         print("""[example]
@@ -418,10 +489,10 @@ def _test_tracker():
               b = 2
               c = 3""", file=fo)
     print('[Create]', files[1])
-    tracker.watch_file(files[1])
+    tracker.watch_or_compare(files[1])
     print('Watch', files[1])
     print('Index', tracker._index)
-    print('Compare', tracker.compare_file(files[1]))
+    print('Compare', tracker.watch_or_compare(files[1]))
     with open(files[1], 'w') as fo:
         print("""[example]
               b = 3
@@ -429,43 +500,44 @@ def _test_tracker():
               [new]
               a = 2""", file=fo)
     print('[Modify]', files[1])
-    print('Compare', tracker.compare_file(files[1]))
+    print('Compare', tracker.watch_or_compare(files[1]))
     print('Index', tracker._index)
     with open(files[1], 'w') as fo:
         print("""[example]
               b = 3
               c = 6""", file=fo)
     print('[Modify]', files[1])
-    print('Compare', tracker.compare_file(files[1]))
+    print('Compare', tracker.watch_or_compare(files[1]))
     print('Index', tracker._index)
     
     print('===  Version Test  ===')
-    print('Version', tracker.checkout_file(files[1], 0))
+    with tracker._lock:
+        print('Version', tracker.checkout_file(files[1], 0))
 
     print('===  Durability Test  ===')
-    tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
+    tracker = FileTracker(settings.cache_dir)
     print('Init')
     print('Index', tracker._index)
 
     print('===  Version depth test  ===')
     shutil.rmtree(settings.cache_dir)
     print('[Clear]')
-    tracker = FileTracker(settings.cache_dir, settings.tracked_pattern, max_depth=1)
+    tracker = FileTracker(settings.cache_dir, max_depth=1)
     print('Init')
     with open(files[0], 'w') as fo:
         print("""[example]
               a = 1""", file=fo)
     print('[Create]', files[0])
-    tracker.watch_file(files[0])
+    tracker.watch_or_compare(files[0])
     print('Watch', files[0])
     with open(files[0], 'a') as fo:
         print('b = 2', file=fo)
     print('[Modify]', files[0])
-    print('Compare', tracker.compare_file(files[0]))
+    print('Compare', tracker.watch_or_compare(files[0]))
     with open(files[0], 'a') as fo:
         print('c = 3', file=fo)
     print('[Modify]', files[0])
-    print('Compare', tracker.compare_file(files[0]))
+    print('Compare', tracker.watch_or_compare(files[0]))
 
     print('===  Exception Test  ===')
     with raises(KeyError):
@@ -475,7 +547,11 @@ def _test_tracker():
 
 
 if __name__ == '__main__':
-    ret = input('Run a test on the tracker. '
-                'This will clear the .track directory. [y]/n: ')
-    if not ret or ret == 'y':
-        _test_tracker()
+    import sys
+    if len(sys.argv) == 1 or sys.argv[1] == 'tracker':
+        ret = input('Run a test on the tracker. '
+                    'This will clear the .track directory. [y]/n: ')
+        if not ret or ret == 'y':
+            _test_tracker()
+    elif sys.argv[1] == 'generic':
+        _test_generic()

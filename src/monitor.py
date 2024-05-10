@@ -19,7 +19,7 @@ EVENT_SIZE = ctypes.sizeof(inotify_event_struct)
 DEFAULT_NUM_EVENTS = 2048
 DEFAULT_EVENT_BUFFER_SIZE = DEFAULT_NUM_EVENTS * (EVENT_SIZE + 16)
 
-tracker = FileTracker(settings.cache_dir, settings.tracked_pattern)
+tracker = FileTracker(settings.cache_dir)
 
 
 class Worker(threading.Thread):
@@ -94,13 +94,13 @@ class Worker(threading.Thread):
             if event.is_create_file:
                 if osp.islink(src_path):
                     self._add_link_watch(src_path)
-                elif osp.isfile(src_path) and tracker.check_pattern(src_path_d):
+                elif osp.isfile(src_path):
                     tracker.watch_or_compare(src_path_d)
             elif event.is_modify_file:
                 if osp.islink(src_path):  # e.g., ln -sfn
                     self._rm_link_watch(src_path)
                     self._add_link_watch(src_path)
-                elif osp.isfile(src_path) and tracker.check_pattern(src_path_d):
+                elif osp.isfile(src_path):
                     tracker.watch_or_compare(src_path_d)
             elif event.is_delete_file:
                 if src_path in self._path_for_link:
@@ -241,7 +241,7 @@ if __name__ == '__main__':
     for item in dir(settings):
         if not item.startswith('_'):
             value = getattr(settings, item)
-            if isinstance(value, Iterable):
+            if isinstance(value, Iterable) and not isinstance(value, str):
                 parser.add_argument(f'--{item}', type=type(value[0]), nargs='*', default=None)
             else:
                 parser.add_argument(f'--{item}', type=type(value), default=None)

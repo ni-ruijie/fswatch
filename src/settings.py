@@ -1,8 +1,7 @@
 # For file tracking
 cache_dir = '.track'
-tracked_pattern = r'.*\.(ini|INI)'
-tracked_patterns = (r'.*\.(ini|INI)', r'.*\.py')
-tracked_filetypes = ('INI', 'GENERIC')
+tracked_patterns = (r'.*\.(ini|INI)', r'.*\.py')  # M tracking re patterns
+tracked_filetypes = ('INI', 'GENERIC')  # M corresponding parser types
 
 # For message routing
 route_tags = ('logs', 'warnings')  # N destinations
