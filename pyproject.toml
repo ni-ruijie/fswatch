@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fswatch"
+version = "0.0.1"
+authors = [
+  { name="Ruijie Ni", email="niruijie@yanfu.investments.com" },
+]
+description = "File system monitoring"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: System :: Monitoring",
+]
