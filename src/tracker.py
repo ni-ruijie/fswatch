@@ -8,6 +8,7 @@ import warnings
 from typing import Dict, List, Tuple, TypeVar
 from threading import Thread, Lock
 from loguru import logger
+from event import ExtendedInotifyConstants, ExtendedEvent
 import settings
 
 
@@ -377,16 +378,19 @@ class FileTracker:
                     re.fullmatch(pattern, osp.relpath(path)):
                 return filetype.from_file(path)
     
-    def watch_or_compare(self, path: str) -> None:
-        Thread(target=self._watch_or_compare, args=(path,)).start()
+    def watch_or_compare(self, path: str, callback: callable = None) -> None:
+        Thread(target=self._watch_or_compare, args=(path, callback)).start()
     
-    def _watch_or_compare(self, path: str) -> None:
+    def _watch_or_compare(self, path: str, callback: callable) -> None:
         cfg = self._match_pattern(path)
         if cfg is None:
             return
         with self._lock:
             if path in self._fid_for_path:
-                self._compare_file(cfg)
+                ret = self._compare_file(cfg)
+                if ret and callback is not None:
+                    callback(ExtendedEvent(
+                        ExtendedInotifyConstants.EX_MODIFY_CONFIG, path))
             else:
                 self._watch_file(cfg)
 

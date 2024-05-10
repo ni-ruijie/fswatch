@@ -19,7 +19,7 @@ from loguru import logger
 from dispatcher import BaseDispatcher
 from tracker import FileTracker
 import settings
-from event import ExtendedInotifyConstants
+from event import ExtendedInotifyConstants, ExtendedEvent
 
 
 EPS = 1e-8
@@ -283,10 +283,10 @@ class MonitorController:
         return fields
     
     def _emit(self, msg: str) -> None:
-        for tag, _, event in self._dispatcher.routes:
-            if event & ExtendedInotifyConstants.EX_META:
-                self._dispatcher.emit(self._dispatcher.gen_data_msg(
-                    tag=tag, msg=msg))
+        for tag in (ExtendedEvent(ExtendedInotifyConstants.EX_META).
+                    select_routes(self._dispatcher.routes)):
+            self._dispatcher.emit(self._dispatcher.gen_data_msg(
+                tag=tag, msg=msg))
     
     def signal_inotify_stats(self, name: str, num: int = 1) -> None:
         Thread(target=self._signal_inotify_stats, args=(name, num)).start()

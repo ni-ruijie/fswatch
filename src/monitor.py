@@ -95,13 +95,13 @@ class Worker(threading.Thread):
                 if osp.islink(src_path):
                     self._add_link_watch(src_path)
                 elif osp.isfile(src_path):
-                    tracker.watch_or_compare(src_path_d)
+                    tracker.watch_or_compare(src_path_d, self._emit)
             elif event.is_modify_file:
                 if osp.islink(src_path):  # e.g., ln -sfn
                     self._rm_link_watch(src_path)
                     self._add_link_watch(src_path)
                 elif osp.isfile(src_path):
-                    tracker.watch_or_compare(src_path_d)
+                    tracker.watch_or_compare(src_path_d, self._emit)
             elif event.is_delete_file:
                 if src_path in self._path_for_link:
                     self._rm_link_watch(src_path)
@@ -208,11 +208,14 @@ class Worker(threading.Thread):
         del self._path_for_wd[wd]
         logger.debug(f'wd: {self._path_for_wd}')
 
+    def _emit(self, event):
+        for tag in event.select_routes(self._channel.routes):
+            self._channel.emit(self._channel.gen_data_msg(tag=tag, msg=str(event)))
+
     def run(self):
         while not self._stopped_event.is_set():
             for event in InotifyBuffer._group_event(self._read_events()):
-                for tag in event.select_routes(self._channel.routes):
-                    self._channel.emit(self._channel.gen_data_msg(tag=tag, msg=str(event)))
+                self._emit(event)
 
     def stop(self):
         self._stopped_event.set()
