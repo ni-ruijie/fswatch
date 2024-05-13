@@ -1,7 +1,8 @@
 # For file tracking
-cache_dir = '.track'
-tracked_patterns = (r'.*\.(ini|INI)', r'.*\.py')  # M tracking re patterns
-tracked_filetypes = ('INI', 'GENERIC')  # M corresponding parser types
+tracker_cachedir = '.track'
+tracker_patterns = (r'.*\.(ini|INI)', r'.*\.py')  # M tracking re patterns
+tracker_filetypes = ('INI', 'GENERIC')  # M corresponding parser types
+tracker_indexer = 'csv'  # options: csv, sql
 
 # For message routing
 route_tags = ('logs', 'warnings', 'tracks')  # N destinations
@@ -21,6 +22,7 @@ buffer_queue_delay = 0.5
 db_host = 'localhost'
 db_user = 'root'
 db_password = 'password'
+db_database = 'fswatch_db'
 
 # For debug only
 dispatcher_type = 'local'

@@ -1,6 +1,6 @@
-CREATE DATABASE IF NOT EXISTS MyTestDB;
+CREATE DATABASE IF NOT EXISTS fswatch_db;
 
-USE MyTestDB;
+USE fswatch_db;
 
 CREATE TABLE IF NOT EXISTS logs (
     unique_time DECIMAL(20,10) NOT NULL, -- 10 digits for datetime, 6 for microseconds, 4 for incremental id

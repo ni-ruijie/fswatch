@@ -6,8 +6,9 @@ import os
 import os.path as osp
 from typing import Iterable, List
 from loguru import logger
+from database.conn import dbconn
 from linux import *
-from tracker import FileTracker
+from tracker import tracker
 from dispatcher import BaseDispatcher, Dispatcher
 from controller import MonitorController
 from event import InotifyEvent
@@ -18,8 +19,6 @@ import settings
 EVENT_SIZE = ctypes.sizeof(inotify_event_struct)
 DEFAULT_NUM_EVENTS = 2048
 DEFAULT_EVENT_BUFFER_SIZE = DEFAULT_NUM_EVENTS * (EVENT_SIZE + 16)
-
-tracker = FileTracker(settings.cache_dir)
 
 
 class Worker(threading.Thread):
@@ -86,8 +85,7 @@ class Worker(threading.Thread):
 
             wd_path = self._path_for_wd[wd]
             src_path = osp.join(wd_path, name) if name else wd_path  # avoid trailing slash
-            # logger.debug(f'Event {mask:08x}')
-            event = InotifyEvent(wd, mask, cookie, name, src_path)
+            event = InotifyEvent(wd, mask, cookie, name, src_path)  # TODO: add overflow and ignored events
             event_list.append(event)
 
             src_path_d = os.fsdecode(src_path)
@@ -101,8 +99,8 @@ class Worker(threading.Thread):
                     self._rm_link_watch(src_path)
                     self._add_link_watch(src_path)
                 elif osp.isfile(src_path):
-                    event.select_procs()
-                    logger.success(event._proc)
+                    # event.select_procs()
+                    # logger.success(event._proc)
                     tracker.watch_or_compare(src_path_d, self._emit)
             elif event.is_delete_file:
                 if src_path in self._path_for_link:
@@ -218,6 +216,7 @@ class Worker(threading.Thread):
         while not self._stopped_event.is_set():
             for event in InotifyBuffer._group_event(self._read_events()):
                 self._emit(event)
+                dbconn.log_event(event)
 
     def stop(self):
         self._stopped_event.set()

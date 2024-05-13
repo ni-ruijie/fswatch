@@ -1,6 +1,6 @@
 # fswatch
 
-用法：
+### 用法
 
 1. （可选）在 `src/settings.py` 中修改运行选项
 2. `python3 src/monitor.py path [path ...] [--dispatcher_type DISPATCHER_TYPE] [--route_events [ROUTE_EVENTS ...]] [--route_patterns [ROUTE_PATTERNS ...]] [--route_tags [ROUTE_TAGS ...]]`
@@ -39,3 +39,21 @@
 - 解释：
   - 监控 `~/test/watched1` 和 `~/test/watched2`
   - 2条路径，第一条监控 *.py 文件的所有事件（包括 rename），第二条监控 *.cc 文件的 delete 事件
+
+
+### 查询日志
+
+```python
+>>> from database.conn import dbconn
+>>> from datetime import datetime
+>>> dbconn.query_event(from_time=datetime(2024, 5, 13, 12), to_time=datetime(2024, 5, 13, 15))  # 查询 2024/5/13 12点到15点的日志
+```
+
+结果：
+```
+[ExtendedEvent(IN_ISDIR|IN_OPEN, /home/user/test/watched, None, 2024-05-13 14:57:31.806956),
+ ExtendedEvent(IN_ACCESS|IN_ISDIR, /home/user/test/watched, None, 2024-05-13 14:57:31.806969),
+ ExtendedEvent(IN_CLOSE_NOWRITE|IN_ISDIR, /home/user/test/watched, None, 2024-05-13 14:57:31.806973),
+ ExtendedEvent(IN_ISDIR|IN_OPEN, /home/user/test/watched/configs, None, 2024-05-13 14:57:31.806978),
+ ...
+```

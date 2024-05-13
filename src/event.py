@@ -133,6 +133,16 @@ class InotifyEvent:
                     self._event_name = event
                     break  # TODO: Is it possible to have multiple user-space events?
         return self._event_name
+    
+    def __repr__(self):
+        masks = []
+        for event in dir(ExtendedInotifyConstants):
+            if not event.startswith('_'):
+                mask = getattr(ExtendedInotifyConstants, event)
+                if self._mask & mask >= mask:
+                    masks.append(event)
+        masks = '|'.join(masks)
+        return f'{self.__class__.__name__}({masks}, {self._src_path}, {self._dest_path}, {self._time})'
 
     def __str__(self):
         return f'{self.event_name} {os.fsdecode(self._src_path)}'
@@ -143,7 +153,7 @@ class ExtendedEvent(InotifyEvent):
                  event_time: float = None) -> None:
         super().__init__(None, mask, None, None,
                          src_path=src_path, dest_path=dest_path, event_time=event_time)
-        self.override = None  # TODO: This extended event may contains and overrides sub-events
+        self.override = None  # TODO: This extended event may contain and override sub-events
 
     @property
     def event_name(self):
