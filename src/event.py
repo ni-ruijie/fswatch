@@ -3,6 +3,7 @@ import re
 from typing import Iterable, List, Tuple, Iterator
 from time import time
 from linux import InotifyConstants
+from loguru import logger
 
 
 class ExtendedInotifyConstants(InotifyConstants):
@@ -22,13 +23,14 @@ class LinuxProcess:
             self._exe = None
 
     @staticmethod
-    def get_procs_by_filename(self, path: str) -> Iterator['LinuxProcess']:
-        pids = []
+    def get_procs_by_filename(path: str) -> Iterator['LinuxProcess']:
         try:
             pids = os.listdir('/proc')
         except:
             return
         for pid in pids:
+            if not pid.isdigit():
+                continue
             try:
                 fds = os.listdir(f'/proc/{pid}/fd')
             except:
@@ -37,8 +39,12 @@ class LinuxProcess:
                 try:
                     if os.readlink(f'/proc/{pid}/fd/{fd}') == path:
                         yield LinuxProcess(pid)
+                        break
                 except:
                     pass
+
+    def __str__(self) -> str:
+        return self._pid
 
 
 class InotifyEvent:
@@ -73,6 +79,9 @@ class InotifyEvent:
                     (pattern.fullmatch(self._src_path) or
                      self._dest_path is not None and pattern.fullmatch(self._dest_path)):
                 yield tag
+
+    def select_procs(self) -> None:
+        self._proc = list(LinuxProcess.get_procs_by_filename(os.fsdecode(self._src_path)))
 
     @property
     def is_dir(self):
@@ -138,7 +147,7 @@ class ExtendedEvent(InotifyEvent):
 
     @property
     def event_name(self):
-        if super().event_name() is None:
+        if super().event_name is None:
             for event in ('EX_RENAME', 'EX_MODIFY_CONFIG'):
                 if self._mask & getattr(ExtendedInotifyConstants, event):
                     self._event_name = event

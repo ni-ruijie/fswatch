@@ -18,3 +18,13 @@ CREATE TABLE IF NOT EXISTS tracked_index (
     format CHAR(3) NOT NULL, -- file format: INI, GEN(ERIC)
     PRIMARY KEY (fid)
 );
+
+CREATE TABLE IF NOT EXISTS aux_logs (
+    id INT NOT NULL AUTO_INCREMENT,
+    time DECIMAL(16,10) NOT NULL, -- 10 digits for datetime, 6 for microseconds
+    mask BIT(40) NOT NULL, -- same as TABLE logs
+    src_path VARCHAR(255) NOT NULL,
+    dest_path VARCHAR(255),
+    monitor_pid INT UNSIGNED NOT NULL,
+    PRIMARY KEY (id)
+);

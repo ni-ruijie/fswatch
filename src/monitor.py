@@ -101,6 +101,8 @@ class Worker(threading.Thread):
                     self._rm_link_watch(src_path)
                     self._add_link_watch(src_path)
                 elif osp.isfile(src_path):
+                    event.select_procs()
+                    logger.success(event._proc)
                     tracker.watch_or_compare(src_path_d, self._emit)
             elif event.is_delete_file:
                 if src_path in self._path_for_link:

@@ -74,7 +74,8 @@ class BaseFile(BaseRecord):
 
     @classmethod
     def from_file(cls, path: str):
-        return cls(cls._read(path), path)
+        data = cls._read(path)
+        return cls(data, path) if data else None
 
     @staticmethod
     def _read(path: str) -> dict:
@@ -390,7 +391,7 @@ class FileTracker:
                 ret = self._compare_file(cfg)
                 if ret and callback is not None:
                     callback(ExtendedEvent(
-                        ExtendedInotifyConstants.EX_MODIFY_CONFIG, path))
+                        ExtendedInotifyConstants.EX_MODIFY_CONFIG, os.fsencode(path)))
             else:
                 self._watch_file(cfg)
 
