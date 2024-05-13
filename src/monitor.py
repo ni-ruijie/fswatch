@@ -8,7 +8,7 @@ from typing import Iterable, List
 from loguru import logger
 from database.conn import dbconn
 from linux import *
-from tracker import tracker
+from tracker import FileTracker
 from dispatcher import BaseDispatcher, Dispatcher
 from controller import MonitorController
 from event import InotifyEvent
@@ -32,6 +32,7 @@ class Worker(threading.Thread):
 
         self._lock = threading.Lock()
         self._fd = inotify_init()
+        logger.debug(f'pid: {os.getpid()}')
         logger.debug(f'fd: {self._fd}')
         self._wd_for_path = {}
         self._path_for_wd = {}
@@ -93,7 +94,7 @@ class Worker(threading.Thread):
                 if osp.islink(src_path):
                     self._add_link_watch(src_path)
                 elif osp.isfile(src_path):
-                    tracker.watch_or_compare(src_path_d, self._emit)
+                    self._controller._tracker.watch_or_compare(src_path_d, self._emit)
             elif event.is_modify_file:
                 if osp.islink(src_path):  # e.g., ln -sfn
                     self._rm_link_watch(src_path)
@@ -101,7 +102,7 @@ class Worker(threading.Thread):
                 elif osp.isfile(src_path):
                     # event.select_procs()
                     # logger.success(event._proc)
-                    tracker.watch_or_compare(src_path_d, self._emit)
+                    self._controller._tracker.watch_or_compare(src_path_d, self._emit)
             elif event.is_delete_file:
                 if src_path in self._path_for_link:
                     self._rm_link_watch(src_path)
@@ -223,7 +224,8 @@ class Worker(threading.Thread):
 
 
 def main(args):
-    dispatcher = Dispatcher(settings.route_tags)
+    dispatcher = Dispatcher()
+    tracker = FileTracker()
     controller = MonitorController(dispatcher, tracker)
     logger.info(f'Monitoring {args.path}.')
 

@@ -45,8 +45,12 @@ class SQLConnection:
         self._ndigits_uid = 4
         self._pid = os.getpid()
 
+    @property
+    def enabled(self):
+        return self._db is not None
+
     def init_conn(self):
-        if self._db is None:
+        if settings.db_enabled and self._db is None:
             with self._lock:
                 if self._db is None:
                     try:
@@ -56,7 +60,7 @@ class SQLConnection:
                             password=settings.db_password,
                             database=settings.db_database
                         )
-                        logger.success('Database connected')
+                        logger.success('SQLConnection: Connection established.')
                     except Exception as e:
                         logger.error(e)
 
@@ -119,6 +123,7 @@ class SQLConnection:
             for unique_time, mask, src_path, dest_path, monitor_pid in ret:
                 events.append(ExtendedEvent(
                     mask, src_path, dest_path, datetime.fromtimestamp(float(unique_time))))
+            # TODO: (Optional) check aux_logs
         return events
                 
     def cursor(self, *args, **kwargs):

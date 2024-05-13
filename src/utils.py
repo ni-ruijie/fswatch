@@ -1,7 +1,6 @@
 import os
 import os.path as osp
 import json
-from linux import InotifyConstants
 
 
 def load_json(path: str) -> dict:

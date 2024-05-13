@@ -103,9 +103,6 @@ class BaseFile(BaseRecord):
     def _reset(cfg: dict, diff: dict) -> dict:
         pass
 
-    def save(self, path: str):
-        utils.save_json(self._data, path)
-
 
 class IniFile(BaseFile):
     format = 'INI'
@@ -307,6 +304,7 @@ class FileTracker:
             self._indexer = CSVIndexer(self._index_file, cols)
         else:
             self._indexer = SQLIndexer(dbconn, 'tracked_index', cols)
+        logger.success(f'FileTracker: Using {self._indexer.__class__.__name__} as indexer.')
 
     def _index(self, fid: int = None) -> Tuple[int, str, int, str]:
         return self._indexer.select(fid)
@@ -356,8 +354,10 @@ class FileTracker:
                     re.fullmatch(pattern, osp.relpath(path)):
                 return filetype.from_file(path)
     
-    def watch_or_compare(self, path: str, callback: callable = None) -> None:
-        Thread(target=self._watch_or_compare, args=(path, callback)).start()
+    def watch_or_compare(self, path: str, callback: callable = None) -> Thread:
+        thread = Thread(target=self._watch_or_compare, args=(path, callback))
+        thread.start()
+        return thread
     
     def _watch_or_compare(self, path: str, callback: callable) -> None:
         cfg = self._match_pattern(path)
@@ -454,6 +454,9 @@ def _test_tracker():
     # Clear .track
     if osp.isdir(settings.tracker_cachedir):
         shutil.rmtree(settings.tracker_cachedir)
+    # Truncate table
+    with dbconn.cursor() as cursor:
+        cursor.execute('TRUNCATE TABLE tracked_index')
     
     print('===  Basic Test  ===')
     tracker = FileTracker()
@@ -462,7 +465,7 @@ def _test_tracker():
     with open(files[0], 'w') as fo:
         pass
     print('[Create]', files[0])
-    tracker.watch_or_compare(files[0])
+    tracker.watch_or_compare(files[0]).join()
     print('Watch', files[0])
     with open(files[1], 'w') as fo:
         print("""[example]
@@ -470,10 +473,10 @@ def _test_tracker():
               b = 2
               c = 3""", file=fo)
     print('[Create]', files[1])
-    tracker.watch_or_compare(files[1])
+    tracker.watch_or_compare(files[1]).join()
     print('Watch', files[1])
     print('Index', tracker._index())
-    print('Compare', tracker.watch_or_compare(files[1]))
+    print('Compare', tracker.watch_or_compare(files[1]).join())
     with open(files[1], 'w') as fo:
         print("""[example]
               b = 3
@@ -481,14 +484,14 @@ def _test_tracker():
               [new]
               a = 2""", file=fo)
     print('[Modify]', files[1])
-    print('Compare', tracker.watch_or_compare(files[1]))
+    print('Compare', tracker.watch_or_compare(files[1]).join())
     print('Index', tracker._index())
     with open(files[1], 'w') as fo:
         print("""[example]
               b = 3
               c = 6""", file=fo)
     print('[Modify]', files[1])
-    print('Compare', tracker.watch_or_compare(files[1]))
+    print('Compare', tracker.watch_or_compare(files[1]).join())
     print('Index', tracker._index())
     
     print('===  Version Test  ===')
@@ -509,16 +512,16 @@ def _test_tracker():
         print("""[example]
               a = 1""", file=fo)
     print('[Create]', files[0])
-    tracker.watch_or_compare(files[0])
+    tracker.watch_or_compare(files[0]).join()
     print('Watch', files[0])
     with open(files[0], 'a') as fo:
         print('b = 2', file=fo)
     print('[Modify]', files[0])
-    print('Compare', tracker.watch_or_compare(files[0]))
+    print('Compare', tracker.watch_or_compare(files[0]).join())
     with open(files[0], 'a') as fo:
         print('c = 3', file=fo)
     print('[Modify]', files[0])
-    print('Compare', tracker.watch_or_compare(files[0]))
+    print('Compare', tracker.watch_or_compare(files[0]).join())
 
     print('===  Exception Test  ===')
     with raises(KeyError):
@@ -531,7 +534,7 @@ if __name__ == '__main__':
     import sys
     if len(sys.argv) == 1 or sys.argv[1] == 'tracker':
         ret = input('Run a test on the tracker. '
-                    'This will clear the .track directory. [y]/n: ')
+                    'This will clear the .track directory and truncate the table. [y]/n: ')
         if not ret or ret == 'y':
             _test_tracker()
     elif sys.argv[1] == 'generic':

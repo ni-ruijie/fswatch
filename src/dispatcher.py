@@ -43,11 +43,11 @@ class BaseDispatcher:
 
 
 class LocalDispatcher(BaseDispatcher):
-    def __init__(self, tags: Iterable[str]) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self._lock = Lock()
         self._fs = {}
-        for tag in tags:
+        for tag in settings.route_tags:
             self._fs[tag] = open(f'.fswatch.{tag}.buf', 'ab')
 
     def emit(self, data: dict) -> None:

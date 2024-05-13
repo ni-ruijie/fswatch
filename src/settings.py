@@ -2,7 +2,7 @@
 tracker_cachedir = '.track'
 tracker_patterns = (r'.*\.(ini|INI)', r'.*\.py')  # M tracking re patterns
 tracker_filetypes = ('INI', 'GENERIC')  # M corresponding parser types
-tracker_indexer = 'csv'  # options: csv, sql
+tracker_indexer = 'sql'  # options: csv, sql
 
 # For message routing
 route_tags = ('logs', 'warnings', 'tracks')  # N destinations
@@ -19,6 +19,7 @@ controller_limit_threshold = 0.9
 buffer_queue_delay = 0.5
 
 # For database
+db_enabled = True
 db_host = 'localhost'
 db_user = 'root'
 db_password = 'password'
