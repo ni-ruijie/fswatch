@@ -6,7 +6,7 @@ import os
 import os.path as osp
 from typing import Iterable, List
 from loguru import logger
-from database.conn import dbconn
+from database.conn import SQLEventLogger
 from linux import *
 from tracker import FileTracker
 from dispatcher import BaseDispatcher, Dispatcher
@@ -41,6 +41,8 @@ class Worker(threading.Thread):
         self._path_for_link = {}  # link -> unique target
 
         self._watch_link = watch_link
+        self._db_logger = SQLEventLogger()
+        self._db_logger.init_conn()
 
         for path in paths:
             self._add_dir_watch(os.fsencode(path))
@@ -217,7 +219,7 @@ class Worker(threading.Thread):
         while not self._stopped_event.is_set():
             for event in InotifyBuffer._group_event(self._read_events()):
                 self._emit(event)
-                dbconn.log_event(event)
+                self._db_logger.log_event(event)
 
     def stop(self):
         self._stopped_event.set()

@@ -8,7 +8,7 @@ import warnings
 from typing import Dict, List, Tuple, TypeVar
 from threading import Thread, Lock
 from loguru import logger
-from database.conn import dbconn
+from database.conn import SQLConnectionPool, dbconn
 from database.indexer import *
 from event import ExtendedInotifyConstants, ExtendedEvent
 import settings
@@ -256,7 +256,12 @@ class GenericFile(BaseFile):
     
 
 FileT = TypeVar('FileT', bound=BaseFile)
-_name_to_type: Dict[str, BaseFile] = {t.format: t for t in (IniFile, GenericFile)}
+_ABBR_LEN = 3
+_file_cls = (IniFile, GenericFile)
+_name_to_type: Dict[str, BaseFile] = {
+    **{t.format: t for t in _file_cls},
+    **{t.format[:_ABBR_LEN]: t for t in _file_cls if len(t.format) > _ABBR_LEN}
+}
 
 
 class FileTracker:
@@ -303,7 +308,9 @@ class FileTracker:
             _create_file(self._index_file)
             self._indexer = CSVIndexer(self._index_file, cols)
         else:
-            self._indexer = SQLIndexer(dbconn, 'tracked_index', cols)
+            pool = SQLConnectionPool(8)
+            pool.init_conn()
+            self._indexer = SQLIndexer('tracked_index', cols, pool)
         logger.success(f'FileTracker: Using {self._indexer.__class__.__name__} as indexer.')
 
     def _index(self, fid: int = None) -> Tuple[int, str, int, str]:
@@ -314,7 +321,7 @@ class FileTracker:
 
     def _insert_index(self, path: str = None,
                       version: int = 0, format: str = 'INI') -> int:
-        return self._indexer.insert(path=path, version=version, format=format[:3])
+        return self._indexer.insert(path=path, version=version, format=format[:_ABBR_LEN])
 
     def _update_index(self, fid: int, path: str = None,
                       version_inc: int = 0) -> None:
@@ -450,33 +457,38 @@ def _test_tracker():
         osp.expanduser('~/test/configs/foo.ini'),
         osp.expanduser('~/test/configs/bar.ini')
     )
+    dbconn.init_conn()
     
-    # Clear .track
-    if osp.isdir(settings.tracker_cachedir):
-        shutil.rmtree(settings.tracker_cachedir)
-    # Truncate table
-    with dbconn.cursor() as cursor:
-        cursor.execute('TRUNCATE TABLE tracked_index')
+    def clear_all():
+        # Clear .track
+        if osp.isdir(settings.tracker_cachedir):
+            shutil.rmtree(settings.tracker_cachedir)
+        # Truncate table
+        with dbconn.cursor() as cursor:
+            cursor.execute('TRUNCATE TABLE tracked_index')
+        print('[Clear]')
     
     print('===  Basic Test  ===')
+    clear_all()
     tracker = FileTracker()
     print('Init')
     print('Index', tracker._index())
     with open(files[0], 'w') as fo:
         pass
     print('[Create]', files[0])
-    tracker.watch_or_compare(files[0]).join()
-    print('Watch', files[0])
+    t = tracker.watch_or_compare(files[0])
+    print('Watch', files[0], t)
     with open(files[1], 'w') as fo:
         print("""[example]
               a = 1
               b = 2
               c = 3""", file=fo)
     print('[Create]', files[1])
-    tracker.watch_or_compare(files[1]).join()
-    print('Watch', files[1])
+    t = tracker.watch_or_compare(files[1])
+    print('Watch', files[1], t)
+    t.join()
     print('Index', tracker._index())
-    print('Compare', tracker.watch_or_compare(files[1]).join())
+    print('Compare', tracker.watch_or_compare(files[1]))
     with open(files[1], 'w') as fo:
         print("""[example]
               b = 3
@@ -484,14 +496,18 @@ def _test_tracker():
               [new]
               a = 2""", file=fo)
     print('[Modify]', files[1])
-    print('Compare', tracker.watch_or_compare(files[1]).join())
+    t = tracker.watch_or_compare(files[1])
+    print('Compare', t)
+    t.join()
     print('Index', tracker._index())
     with open(files[1], 'w') as fo:
         print("""[example]
               b = 3
               c = 6""", file=fo)
     print('[Modify]', files[1])
-    print('Compare', tracker.watch_or_compare(files[1]).join())
+    t = tracker.watch_or_compare(files[1])
+    print('Compare', t)
+    t.join()
     print('Index', tracker._index())
     
     print('===  Version Test  ===')
@@ -504,26 +520,28 @@ def _test_tracker():
     print('Index', tracker._index())
 
     print('===  Version depth test  ===')
-    shutil.rmtree(settings.tracker_cachedir)
-    print('[Clear]')
-    tracker = FileTracker()
+    clear_all()
+    tracker = FileTracker(max_depth=1)
     print('Init')
     with open(files[0], 'w') as fo:
         print("""[example]
               a = 1""", file=fo)
     print('[Create]', files[0])
-    tracker.watch_or_compare(files[0]).join()
-    print('Watch', files[0])
+    t = tracker.watch_or_compare(files[0])
+    print('Watch', files[0], t)
     with open(files[0], 'a') as fo:
         print('b = 2', file=fo)
     print('[Modify]', files[0])
-    print('Compare', tracker.watch_or_compare(files[0]).join())
+    t = tracker.watch_or_compare(files[0])
+    print('Compare', t)
     with open(files[0], 'a') as fo:
         print('c = 3', file=fo)
     print('[Modify]', files[0])
-    print('Compare', tracker.watch_or_compare(files[0]).join())
+    t = tracker.watch_or_compare(files[0])
+    print('Compare', t)
 
     print('===  Exception Test  ===')
+    t.join()
     with raises(KeyError):
         tracker.checkout_file('', 0)
     with raises(FileNotFoundError):

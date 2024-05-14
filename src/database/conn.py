@@ -1,6 +1,8 @@
+from abc import abstractmethod
 from math import modf
 from datetime import datetime
-from threading import Lock
+from typing import Callable
+from threading import Thread, Lock, Semaphore
 import mysql.connector
 import mysql.connector.cursor_cext
 import os
@@ -9,13 +11,22 @@ from loguru import logger
 import settings
 
 
+def _dbconfig():
+    return dict(
+        host=settings.db_host,
+        user=settings.db_user,
+        password=settings.db_password,
+        database=settings.db_database
+    )
+
+
 class CursorContext:
-    def __init__(self, db: mysql.connector.connection_cext.CMySQLConnection) -> None:
-        self._db = db
+    def __init__(self, conn: mysql.connector.connection_cext.CMySQLConnection) -> None:
+        self._conn = conn
         self._cursor = None
 
     def __enter__ (self) -> mysql.connector.cursor_cext.CMySQLCursor:
-        self._cursor = self._db.cursor()
+        self._cursor = self._conn.cursor()
         return self._cursor
     
     def __exit__(self, exc_type, exc_value, exc_tb) -> None:
@@ -23,52 +34,150 @@ class CursorContext:
 
 
 class TransactionContext(CursorContext):
-    def __init__(self, db: mysql.connector.connection_cext.CMySQLConnection, *args, **kwargs) -> None:
-        super().__init__(db)
+    def __init__(self, conn: mysql.connector.connection_cext.CMySQLConnection, *args, **kwargs) -> None:
+        super().__init__(conn)
         self.args = args
         self.kwargs = kwargs
 
     def __enter__ (self) -> mysql.connector.cursor_cext.CMySQLCursor:
-        self._db.start_transaction(*self.args, **self.kwargs)
+        self._conn.start_transaction(*self.args, **self.kwargs)
         return super().__enter__()
     
     def __exit__(self, exc_type, exc_value, exc_tb) -> None:
         super().__exit__(exc_type, exc_value, exc_tb)
-        self._db.commit()
+        self._conn.commit()
 
 
-class SQLConnection:
+class ConnectionContext:
+    def __init__(self, pool: mysql.connector.pooling.MySQLConnectionPool,
+                 sem: Semaphore, sub_ctx: CursorContext) -> None:
+        self._pool = pool
+        self._sem = sem
+        self._sub_ctx: CursorContext = sub_ctx
+        self._conn = None
+    
+    def __enter__(self) -> mysql.connector.cursor_cext.CMySQLCursor:
+        self._sem.__enter__()
+        self._sub_ctx._conn = self._conn = self._pool.get_connection()
+        return self._sub_ctx.__enter__()
+
+    def __exit__(self, exc_type, exc_value, exc_tb) -> None:
+        self._sub_ctx.__exit__(exc_type, exc_value, exc_tb)
+        self._conn.close()
+        self._sem.__exit__(exc_type, exc_value, exc_tb)
+
+
+class ConnectionSingleton:
     def __init__(self):
-        self._db: mysql.connector.connection_cext.CMySQLConnection = None
+        self._resource = None
         self._lock = Lock()
-        self._ndigits_microsec = 6
-        self._ndigits_uid = 4
         self._pid = os.getpid()
 
     @property
-    def enabled(self):
-        return self._db is not None
+    def enabled(self) -> bool:
+        return self._resource is not None
 
-    def init_conn(self):
-        if settings.db_enabled and self._db is None:
+    def init_conn(self) -> None:
+        if not settings.db_enabled:
+            return
+        if self._resource is None:
             with self._lock:
-                if self._db is None:
-                    try:
-                        self._db = mysql.connector.connect(
-                            host=settings.db_host,
-                            user=settings.db_user,
-                            password=settings.db_password,
-                            database=settings.db_database
-                        )
-                        logger.success('SQLConnection: Connection established.')
-                    except Exception as e:
-                        logger.error(e)
+                if self._resource is None:
+                    self._resource = self._init_resource()
+
+    @abstractmethod
+    def _init_resource(self):
+        pass
+
+    def lazy_init(func):
+        def inner(self: 'ConnectionSingleton', *args, **kwargs):
+            self.init_conn()
+            return func(self, *args, **kwargs)
+        return inner
+
+
+class SQLConnection(ConnectionSingleton):
+    def __init__(self):
+        super().__init__()
+
+    @property
+    def _conn(self) -> mysql.connector.connection_cext.CMySQLConnection:
+        return self._resource
+
+    def _init_resource(self):
+        res = mysql.connector.connect(**_dbconfig())
+        logger.success(f'{self}: Connection established.')
+        return res
+    
+    @ConnectionSingleton.lazy_init
+    def cursor(self, *args, **kwargs) -> CursorContext:
+        return CursorContext(self._conn, *args, **kwargs)
+
+    @ConnectionSingleton.lazy_init
+    def transaction(self, *args, **kwargs) -> TransactionContext:
+        return TransactionContext(self._conn, *args, **kwargs)
+    
+    def close_conn(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+
+
+class SQLConnectionPool(SQLConnection):
+    def __init__(self, pool_size=8):
+        super().__init__()
+        self._pool_size = pool_size
+        self._sem = Semaphore(pool_size)
+
+    @property
+    def _pool(self) -> mysql.connector.pooling.MySQLConnectionPool:
+        return self._resource
+
+    def _init_resource(self):
+        res = mysql.connector.pooling.MySQLConnectionPool(
+            pool_size=self._pool_size,
+            **_dbconfig()
+        )
+        return res
+    
+    @ConnectionSingleton.lazy_init
+    def cursor(self, *args, **kwargs) -> CursorContext:
+        return ConnectionContext(
+            self._pool, self._sem,
+            CursorContext(None, *args, **kwargs)
+        )
+    
+    @ConnectionSingleton.lazy_init
+    def transaction(self, *args, **kwargs) -> TransactionContext:
+        return ConnectionContext(
+            self._pool, self._sem,
+            TransactionContext(None, *args, **kwargs)
+        )
+
+
+class ConnectionThread(Thread):
+    def __init__(self, group=None, target: Callable[..., object] | None = None, name: str | None = None,
+                 args=(), kwargs=None, *, daemon: bool | None = None) -> None:
+        self._conn = SQLConnection()
+        super().__init__(group, target, name, args,
+                         {'conn': self._conn, **kwargs}, daemon=daemon)
+        
+    def run(self) -> None:
+        self._conn.init_conn()
+        super().run()
+        self._conn.close_conn()
+
+
+class SQLEventLogger(SQLConnection):
+    def __init__(self):
+        super().__init__()
+        self._ndigits_microsec = 6
+        self._ndigits_uid = 4
 
     def _timestamp_to_decimal(self, timestamp):
         microsec, sec = modf(timestamp)
         microsec, sec = int(microsec * 10**self._ndigits_microsec), int(sec)
         return microsec, sec
-
+    
     def log_event(self, event: InotifyEvent):
         microsec, sec = self._timestamp_to_decimal(event._time)
 
@@ -87,7 +196,7 @@ class SQLConnection:
             if inc_id == 10**self._ndigits_uid:
                 # In case we run out of 10000 uids within one microsecond
                 # NOTE: This occasion is rarely encountered
-                self._db.commit()  # commit the previous transaction
+                self._conn.commit()  # commit the previous transaction
                 cursor.execute(
                     'INSERT INTO aux_logs (time, mask, src_path, dest_path, monitor_pid)'
                     'VALUES (%s, %s, %s, %s, %s)',
@@ -125,13 +234,6 @@ class SQLConnection:
                     mask, src_path, dest_path, datetime.fromtimestamp(float(unique_time))))
             # TODO: (Optional) check aux_logs
         return events
-                
-    def cursor(self, *args, **kwargs):
-        return CursorContext(self._db, *args, **kwargs)
-
-    def transaction(self, *args, **kwargs):
-        return TransactionContext(self._db, *args, **kwargs)
 
 
-dbconn = SQLConnection()
-dbconn.init_conn()
+dbconn = SQLConnection()  # NOTE: for main thread only!

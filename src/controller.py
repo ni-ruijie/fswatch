@@ -232,7 +232,7 @@ class MonitorController:
             args = parser.parse_args(cmd.split()[1:])
             logger.success(self._tracker.checkout_file(args.path, args.version))
         elif name == 'list_tracked':
-            logger.success(list(self._tracker._fid_for_path.keys()))
+            logger.success(list(self._tracker._index()))
         else:
             logger.error(f'Command not recognized: {cmd}')
 

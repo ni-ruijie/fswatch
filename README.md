@@ -44,8 +44,9 @@
 ### 查询日志
 
 ```python
->>> from database.conn import dbconn
+>>> from database.conn import SQLEventLogger
 >>> from datetime import datetime
+>>> dbconn = SQLEventLogger()
 >>> dbconn.query_event(from_time=datetime(2024, 5, 13, 12), to_time=datetime(2024, 5, 13, 15))  # 查询 2024/5/13 12点到15点的日志
 ```
 

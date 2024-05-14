@@ -15,27 +15,27 @@ class BaseIndexer:
         self._secondary = cols[1]  # secondary key a.k.a. key2
     
     @abstractmethod
-    def select(self, key=None) -> tuple:
+    def select(self, key=None, **kwargs) -> tuple:
         """primary -> (primary, secondary, ...).
         Select all if key is None.
         """
         pass
 
     @abstractmethod
-    def select2(self, key2):
+    def select2(self, key2, **kwargs):
         """secondary -> primary"""
         pass
 
     @abstractmethod
-    def insert(self, key, values) -> None:
+    def insert(self, key, values, **kwargs) -> None:
         pass
 
     @abstractmethod
-    def update(self, key, values) -> None:
+    def update(self, key, values, **kwargs) -> None:
         pass
 
     @abstractmethod
-    def delete(self, key) -> None:
+    def delete(self, key, **kwargs) -> None:
         pass
 
 
@@ -104,13 +104,32 @@ class CSVIndexer(BaseIndexer):
 
 
 class SQLIndexer(BaseIndexer):
-    def __init__(self, conn: SQLConnection, table: str, cols: tuple):
+    def __init__(self, table: str, cols: tuple, conn: SQLConnection = None):
         super().__init__(cols)
         self._table = table
         self._conn = conn
 
-    def select(self, key=None) -> tuple:
-        with self._conn.cursor() as cursor:
+    def _get_connection(func):
+        def inner(self, *args, **kwargs):
+            conn: SQLConnection = None
+            temp_conn = False
+            if 'conn' in kwargs:
+                conn = kwargs.pop('conn')
+            if conn is None:
+                conn = self._conn
+            if conn is None:
+                conn = SQLConnection()
+                conn.init_conn()
+                temp_conn = True
+            ret = func(self, conn, *args, **kwargs)
+            if temp_conn:
+                conn.close_conn()
+            return ret
+        return inner
+
+    @_get_connection
+    def select(self, conn, key=None) -> tuple:
+        with conn.cursor() as cursor:
             if key is None:
                 cursor.execute(f'SELECT * FROM {self._table}')
                 ret = cursor.fetchall()
@@ -119,19 +138,22 @@ class SQLIndexer(BaseIndexer):
                 ret = cursor.fetchone()
         return ret
         
-    def select2(self, key2):
-        with self._conn.cursor() as cursor:
+    @_get_connection
+    def select2(self, conn, key2):
+        with conn.cursor() as cursor:
             cursor.execute(f'SELECT {self._primary} FROM {self._table} WHERE {self._secondary}=%s', (key2,))
             ret = cursor.fetchone()
         if ret is None:
             return None
         return ret[0]
 
-    def insert(self, **cols) -> int:
+    @_get_connection
+    def insert(self, conn: SQLConnection, **cols) -> int:
         key = cols.get(self._primary)
         fields = tuple(f for f in cols if cols[f] is not None)
         values = tuple(cols[f] for f in fields)
-        with self._conn.cursor() as cursor:
+        # with conn.cursor() as cursor:
+        with conn.transaction(isolation_level='SERIALIZABLE') as cursor:
             fmt_fields = ', '.join(fields)
             fmt_values = ', '.join(('%s',) * len(values))
             cursor.execute(
@@ -142,11 +164,13 @@ class SQLIndexer(BaseIndexer):
                 key = cursor.fetchone()[0]
         return key
 
-    def update(self, key, **cols) -> None:
-        with self._conn.transaction(isolation_level='SERIALIZABLE') as cursor:
+    @_get_connection
+    def update(self, conn: SQLConnection, key, **cols) -> None:
+        with conn.transaction(isolation_level='SERIALIZABLE') as cursor:
             fields = tuple(f for f in cols if cols[f] is not None)
+            fmt_fields = ', '.join(fields)
             cursor.execute(
-                f'SELECT {fields} FROM {self._table} WHERE {self._primary}=%s',
+                f'SELECT ({fmt_fields}) FROM {self._table} WHERE {self._primary}=%s',
                 (key,))
             ret = cursor.fetchone()
             if not ret:
