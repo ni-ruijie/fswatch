@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Callable
 from threading import Thread, Lock, Semaphore
 import mysql.connector
-import mysql.connector.cursor_cext
+import mysql.connector.pooling
 import os
 from event import InotifyEvent, ExtendedEvent
 from loguru import logger
@@ -21,11 +21,11 @@ def _dbconfig():
 
 
 class CursorContext:
-    def __init__(self, conn: mysql.connector.connection_cext.CMySQLConnection) -> None:
+    def __init__(self, conn: mysql.connector.connection.MySQLConnection) -> None:
         self._conn = conn
         self._cursor = None
 
-    def __enter__ (self) -> mysql.connector.cursor_cext.CMySQLCursor:
+    def __enter__ (self) -> mysql.connector.connection.MySQLCursor:
         self._cursor = self._conn.cursor()
         return self._cursor
     
@@ -34,12 +34,12 @@ class CursorContext:
 
 
 class TransactionContext(CursorContext):
-    def __init__(self, conn: mysql.connector.connection_cext.CMySQLConnection, *args, **kwargs) -> None:
+    def __init__(self, conn: mysql.connector.connection.MySQLConnection, *args, **kwargs) -> None:
         super().__init__(conn)
         self.args = args
         self.kwargs = kwargs
 
-    def __enter__ (self) -> mysql.connector.cursor_cext.CMySQLCursor:
+    def __enter__ (self) -> mysql.connector.connection.MySQLCursor:
         self._conn.start_transaction(*self.args, **self.kwargs)
         return super().__enter__()
     
@@ -56,7 +56,7 @@ class ConnectionContext:
         self._sub_ctx: CursorContext = sub_ctx
         self._conn = None
     
-    def __enter__(self) -> mysql.connector.cursor_cext.CMySQLCursor:
+    def __enter__(self) -> mysql.connector.connection.MySQLCursor:
         self._sem.__enter__()
         self._sub_ctx._conn = self._conn = self._pool.get_connection()
         return self._sub_ctx.__enter__()
@@ -106,7 +106,7 @@ class SQLConnection(ConnectionSingleton):
         super().__init__()
 
     @property
-    def _conn(self) -> mysql.connector.connection_cext.CMySQLConnection:
+    def _conn(self) -> mysql.connector.connection.MySQLConnection:
         return self._resource
 
     def _init_resource(self):
@@ -160,8 +160,8 @@ class SQLConnectionPool(SQLConnection):
 
 
 class ConnectionThread(Thread):
-    def __init__(self, group=None, target: Callable[..., object] | None = None, name: str | None = None,
-                 args=(), kwargs=None, *, daemon: bool | None = None) -> None:
+    def __init__(self, group=None, target: Callable[..., object] = None, name: str = None,
+                 args=(), kwargs=None, *, daemon: bool = None) -> None:
         self._conn = SQLConnection()
         super().__init__(group, target, name, args,
                          {'conn': self._conn, **kwargs}, daemon=daemon)
