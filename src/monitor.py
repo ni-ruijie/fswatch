@@ -4,6 +4,7 @@ import threading
 import errno
 import os
 import os.path as osp
+from queue import Queue
 from typing import Iterable, List
 from loguru import logger
 from database.conn import SQLEventLogger
@@ -44,6 +45,8 @@ class Worker(threading.Thread):
         self._db_logger = SQLEventLogger()
         self._db_logger.init_conn()
 
+        self._callback_queue = Queue[InotifyEvent]()
+
         for path in paths:
             self._add_dir_watch(os.fsencode(path))
 
@@ -81,14 +84,16 @@ class Worker(threading.Thread):
                 # NOTE: The entire queue is dropped when an overflow occurs
                 # NOTE: Overflow can be triggered by list(os.walk(link_loop, followlinks=True))
                 logger.critical('Queue overflow occurred')
+                event_list.append(InotifyEvent(wd, mask, cookie, name, b''))
                 continue
             if mask & InotifyConstants.IN_IGNORED:
                 logger.warning('Event ignored')
+                event_list.append(InotifyEvent(wd, mask, cookie, name, b''))
                 continue
 
             wd_path = self._path_for_wd[wd]
             src_path = osp.join(wd_path, name) if name else wd_path  # avoid trailing slash
-            event = InotifyEvent(wd, mask, cookie, name, src_path)  # TODO: add overflow and ignored events
+            event = InotifyEvent(wd, mask, cookie, name, src_path)
             event_list.append(event)
 
             src_path_d = os.fsdecode(src_path)
@@ -96,7 +101,7 @@ class Worker(threading.Thread):
                 if osp.islink(src_path):
                     self._add_link_watch(src_path)
                 elif osp.isfile(src_path):
-                    self._controller._tracker.watch_or_compare(src_path_d, self._emit)
+                    self._controller._tracker.watch_or_compare(src_path_d, self._queue_for_emit)
             elif event.is_modify_file:
                 if osp.islink(src_path):  # e.g., ln -sfn
                     self._rm_link_watch(src_path)
@@ -104,7 +109,7 @@ class Worker(threading.Thread):
                 elif osp.isfile(src_path):
                     # event.select_procs()
                     # logger.success(event._proc)
-                    self._controller._tracker.watch_or_compare(src_path_d, self._emit)
+                    self._controller._tracker.watch_or_compare(src_path_d, self._queue_for_emit)
             elif event.is_delete_file:
                 if src_path in self._path_for_link:
                     self._rm_link_watch(src_path)
@@ -211,17 +216,26 @@ class Worker(threading.Thread):
         del self._path_for_wd[wd]
         logger.debug(f'wd: {self._path_for_wd}')
 
+    def _queue_for_emit(self, event):
+        self._callback_queue.put(event)
+
     def _emit(self, event):
-        for tag in event.select_routes(self._channel.routes):
-            self._channel.emit(self._channel.gen_data_msg(tag=tag, msg=str(event)))
+        for route in event.select_routes(self._channel.routes):
+            self._channel.emit(self._channel.gen_data_msg(
+                tag=route.tag, msg=route.format.format(**event.get_fields())))
 
     def run(self):
         while not self._stopped_event.is_set():
             for event in InotifyBuffer._group_event(self._read_events()):
                 self._emit(event)
                 self._db_logger.log_event(event)
+            while not self._callback_queue.empty():
+                event = self._callback_queue.get()
+                self._emit(event)
+                self._db_logger.log_event(event)
 
     def stop(self):
+        self._db_logger.stop()
         self._stopped_event.set()
 
 
@@ -233,10 +247,18 @@ def main(args):
     controller = MonitorController(dispatcher, tracker)
     logger.info(f'Monitoring {args.paths}.')
 
-    worker = Worker(args.paths, dispatcher, controller)
-    worker.start()
+    workers = []
+    if settings.worker_every_path:
+        for path in args.paths:
+            workers.append(Worker([path], dispatcher, controller))
+    else:
+        workers = [Worker(args.paths, dispatcher, controller)]
     
-    worker.join()
+    for worker in workers:
+        worker.start()
+
+    for worker in workers:
+        worker.join()
     dispatcher.close()
 
 

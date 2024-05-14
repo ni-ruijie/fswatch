@@ -1,3 +1,6 @@
+# For worker
+worker_every_path = False  # if true, use one worker thread (along with an inotify instance) for each path
+
 # For file tracking
 tracker_cachedir = '.track'
 tracker_patterns = (r'.*\.(ini|INI)', r'.*\.py')  # M tracking re patterns
@@ -9,7 +12,7 @@ route_tags = ('logs', 'warnings', 'tracks')  # N destinations
 route_patterns = (r'.*', r'.*', r'.*')  # N watching re patterns
 route_events = ('IN_ALL_EVENTS|EX_RENAME', 'EX_META', 'EX_MODIFY_CONFIG')  # N watching events
 # TODO: route_types = ('', '')  # N watching types
-# TODO: route_formats = ('{event} {path}', '{msg}')  # N output formats
+route_formats = ('Event {ev_name} on {ev_src}', '{msg}', 'Modified {ev_src}')  # N output formats
 
 # For controller
 basic_controller_interval = 3600

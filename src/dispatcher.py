@@ -11,20 +11,28 @@ from threading import Lock
 import settings
 
 
-def parse_routes() -> Iterator[Tuple[str, re.Pattern, int]]:
-    for tag, pattern, event in zip(
-            settings.route_tags, settings.route_patterns, settings.route_events):
-        pattern = re.compile(os.fsencode(pattern))
-        event = reduce(
-            lambda x, y: x | y,
-            [getattr(ExtendedInotifyConstants, e) for e in event.split('|')]
-        )
-        yield (tag, pattern, event)
+class Route:
+    def __init__(self, tag: str, pattern: re.Pattern, event: int, format: str):
+        self.tag = tag
+        self.pattern = pattern
+        self.event = event
+        self.format = format
+
+    @classmethod
+    def parse_routes(cls) -> Iterator['Route']:
+        for tag, pattern, event, format in zip(
+                settings.route_tags, settings.route_patterns, settings.route_events, settings.route_formats):
+            pattern = re.compile(os.fsencode(pattern))
+            event = reduce(
+                lambda x, y: x | y,
+                [getattr(ExtendedInotifyConstants, e) for e in event.split('|')]
+            )
+            yield Route(tag, pattern, event, format)
 
 
 class BaseDispatcher:
     def __init__(self) -> None:
-        self.routes = list(parse_routes())
+        self.routes = list(Route.parse_routes())
     
     def emit(self, data: dict) -> None:
         pass

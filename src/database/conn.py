@@ -2,9 +2,10 @@ from abc import abstractmethod
 from math import modf
 from datetime import datetime
 from typing import Callable
-from threading import Thread, Lock, Semaphore
+from threading import Thread, Lock, Semaphore, Event
 import mysql.connector
 import mysql.connector.pooling
+from queue import Queue
 import os
 from event import InotifyEvent, ExtendedEvent
 from loguru import logger
@@ -31,6 +32,7 @@ class CursorContext:
     
     def __exit__(self, exc_type, exc_value, exc_tb) -> None:
         self._cursor.close()
+        self._conn.commit()  # NOTE: why commit even outside transaction?
 
 
 class TransactionContext(CursorContext):
@@ -45,7 +47,6 @@ class TransactionContext(CursorContext):
     
     def __exit__(self, exc_type, exc_value, exc_tb) -> None:
         super().__exit__(exc_type, exc_value, exc_tb)
-        self._conn.commit()
 
 
 class ConnectionContext:
@@ -172,13 +173,22 @@ class ConnectionThread(Thread):
         self._conn.close_conn()
 
 
-class SQLEventLogger(SQLConnection):
+class SQLEventLogger(Thread, SQLConnection):
     def __init__(self):
-        super().__init__()
+        Thread.__init__(self)
+        SQLConnection.__init__(self)
         self._ndigits_microsec = 6
         self._ndigits_uid = 4
         if not self.enabled:
             logger.warning('SQL is not enabled. Events will not be recorded in database.')
+        self._queue = Queue[InotifyEvent]()
+        self._stopped_event = Event()
+        Thread.start(self)
+
+    def run(self) -> None:
+        while not self._stopped_event.is_set():
+            if not self._queue.empty():
+                self._log_event(self._queue.get())
 
     def _timestamp_to_decimal(self, timestamp):
         microsec, sec = modf(timestamp)
@@ -188,9 +198,13 @@ class SQLEventLogger(SQLConnection):
     def log_event(self, event: InotifyEvent):
         if not self.enabled:
             return
+        self._queue.put(event)
+    
+    @ConnectionSingleton.lazy_init
+    def _log_event(self, event: InotifyEvent):
         microsec, sec = self._timestamp_to_decimal(event._time)
 
-        with self.transaction(isolation_level='SERIALIZABLE') as cursor:
+        with self.cursor() as cursor:
             cursor.execute(
                 'SELECT unique_time FROM logs '
                 'WHERE unique_time >= %s AND unique_time < %s '
@@ -205,7 +219,6 @@ class SQLEventLogger(SQLConnection):
             if inc_id == 10**self._ndigits_uid:
                 # In case we run out of 10000 uids within one microsecond
                 # NOTE: This occasion is rarely encountered
-                self._conn.commit()  # commit the previous transaction
                 cursor.execute(
                     'INSERT INTO aux_logs (time, mask, src_path, dest_path, monitor_pid)'
                     'VALUES (%s, %s, %s, %s, %s)',
@@ -216,6 +229,7 @@ class SQLEventLogger(SQLConnection):
                     'VALUES (%s, %s, %s, %s, %s)',
                     (f'{sec}.{microsec}{inc_id}', event._mask, event._src_path, event._dest_path, self._pid))
                 
+    @ConnectionSingleton.lazy_init
     def query_event(self, from_time: datetime = None, to_time: datetime = None,
                     pattern: str = None, mask: int = None, pid: int = None) -> tuple:
         # NOTE: `pattern` is a SQL pattern
@@ -243,6 +257,9 @@ class SQLEventLogger(SQLConnection):
                     mask, src_path, dest_path, datetime.fromtimestamp(float(unique_time))))
             # TODO: (Optional) check aux_logs
         return events
+
+    def stop(self):
+        self._stopped_event.set()
 
 
 dbconn = SQLConnection()  # NOTE: for main thread only!

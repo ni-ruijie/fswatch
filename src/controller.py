@@ -283,10 +283,10 @@ class MonitorController:
         return fields
     
     def _emit(self, msg: str) -> None:
-        for tag in (ExtendedEvent(ExtendedInotifyConstants.EX_META).
+        for route in (ExtendedEvent(ExtendedInotifyConstants.EX_META).
                     select_routes(self._dispatcher.routes)):
             self._dispatcher.emit(self._dispatcher.gen_data_msg(
-                tag=tag, msg=msg))
+                tag=route.tag, msg=route.format.format(msg=msg)))
     
     def signal_inotify_stats(self, name: str, num: int = 1) -> None:
         Thread(target=self._signal_inotify_stats, args=(name, num)).start()

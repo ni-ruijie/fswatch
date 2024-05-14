@@ -4,6 +4,7 @@ from typing import Iterable, List, Tuple, Iterator
 from time import time
 from linux import InotifyConstants
 from loguru import logger
+from datetime import datetime
 
 
 class ExtendedInotifyConstants(InotifyConstants):
@@ -73,12 +74,12 @@ class InotifyEvent:
             event_time=other._time
         )
 
-    def select_routes(self, routes: Iterable[Tuple[str, re.Pattern, int]]) -> Iterator[str]:
-        for tag, pattern, event in routes:
-            if event & self._mask and \
-                    (pattern.fullmatch(self._src_path) or
-                     self._dest_path is not None and pattern.fullmatch(self._dest_path)):
-                yield tag
+    def select_routes(self, routes: Iterable) -> Iterator:
+        for route in routes:
+            if route.event & self._mask and \
+                    (route.pattern.fullmatch(self._src_path) or
+                     self._dest_path is not None and route.pattern.fullmatch(self._dest_path)):
+                yield route
 
     def select_procs(self) -> None:
         self._proc = list(LinuxProcess.get_procs_by_filename(os.fsdecode(self._src_path)))
@@ -134,7 +135,8 @@ class InotifyEvent:
                     break  # TODO: Is it possible to have multiple user-space events?
         return self._event_name
     
-    def __repr__(self):
+    @property
+    def full_event_name(self):
         masks = []
         for event in dir(ExtendedInotifyConstants):
             if not event.startswith('_'):
@@ -142,14 +144,25 @@ class InotifyEvent:
                 if self._mask & mask >= mask:
                     masks.append(event)
         masks = '|'.join(masks)
-        return f'{self.__class__.__name__}({masks}, {self._src_path}, {self._dest_path}, {self._time})'
+        return masks
+    
+    def get_fields(self) -> dict:
+        return {
+            'ev_src': os.fsdecode(self._src_path) if self._src_path is not None else None,
+            'ev_dest': os.fsdecode(self._dest_path) if self._dest_path is not None else None,
+            'ev_time': datetime.fromtimestamp(self._time),
+            'ev_name': self.full_event_name
+        }
+    
+    def __repr__(self):
+        return f'{self.__class__.__name__}({self.full_event_name}, {self._src_path}, {self._dest_path}, {self._time})'
 
     def __str__(self):
         return f'{self.event_name} {os.fsdecode(self._src_path)}'
     
 
 class ExtendedEvent(InotifyEvent):
-    def __init__(self, mask: int, src_path: str = '', dest_path: str = None,
+    def __init__(self, mask: int, src_path: bytes = b'', dest_path: bytes = None,
                  event_time: float = None) -> None:
         super().__init__(None, mask, None, None,
                          src_path=src_path, dest_path=dest_path, event_time=event_time)
