@@ -1,9 +1,23 @@
 # fswatch
 
+### 说明
+
+Inotify事件，主要为
+- IN_OPEN, IN_CREATE, IN_ACCESS: 打开，创建，读取
+- IN_MODIFY, IN_CLOSE_WRITE, IN_CLOSE_NOWRITE: 修改，有写入后关闭，无写入后关闭
+- IN_MOVED_FROM, IN_MOVED_TO: 移出，移入
+- IN_OVERFLOW: inotify事件队列溢出
+
+扩展事件
+- EX_RENAME: 重命名事件，由一对移出移入构成
+- EX_BEGIN_MODIFY, EX_END_MODIFY: 连续修改事件的开始和结束，用于 copy 和 vim 等修改事件
+- EX_META: 监控程序自身运行告警
+- EX_MODIFY_CONFIG: 记录了新的文件版本
+
 ### 用法
 
-1. （可选）在 `src/settings.py` 中修改运行选项
-2. `python3 src/monitor.py path [path ...] [--dispatcher_type DISPATCHER_TYPE] [--route_events [ROUTE_EVENTS ...]] [--route_patterns [ROUTE_PATTERNS ...]] [--route_tags [ROUTE_TAGS ...]]`
+1. （可选）在 `src/settings.py` 中修改运行选项，或写json格式配置文件
+2. `python3 src/monitor.py path [path ...] --config_files [CONFIG_FILES ...] [--dispatcher_type DISPATCHER_TYPE] [--route_events [ROUTE_EVENTS ...]] [--route_patterns [ROUTE_PATTERNS ...]] [--route_tags [ROUTE_TAGS ...]] --route_formats [ROUTE_FORMATS ...]`，settings 中选项先依次被 `config_files` 覆盖，后被运行参数覆盖
 3. 对于 `--dispatcher_type local`，使用 `tail -f .fswatch.{route_tag}.buf` 调试
 4. 在 monitor.py 的运行中输入 list_tracked, checkout 指令查看追踪的 INI 文件，输入 exit 退出
 

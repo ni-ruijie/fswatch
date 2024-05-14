@@ -4,3 +4,4 @@
 test/
 .track/
 **/*.buf
+configs/

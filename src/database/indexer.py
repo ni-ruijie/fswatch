@@ -152,7 +152,7 @@ class SQLIndexer(BaseIndexer):
         key = cols.get(self._primary)
         fields = tuple(f for f in cols if cols[f] is not None)
         values = tuple(cols[f] for f in fields)
-        with conn.transaction(isolation_level='REPEATABLE') as cursor:
+        with conn.transaction(isolation_level='REPEATABLE READ') as cursor:
             fmt_fields = ', '.join(fields)
             fmt_values = ', '.join(('%s',) * len(values))
             cursor.execute(
@@ -165,7 +165,7 @@ class SQLIndexer(BaseIndexer):
 
     @_get_connection
     def update(self, conn: SQLConnection, key, **cols) -> None:
-        with conn.transaction(isolation_level='REPEATABLE') as cursor:
+        with conn.transaction(isolation_level='REPEATABLE READ') as cursor:
             fields = tuple(f for f in cols if cols[f] is not None)
             fmt_fields = ', '.join(fields)
             cursor.execute(

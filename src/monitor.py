@@ -229,6 +229,7 @@ class Worker(threading.Thread):
             for event in InotifyBuffer._group_event(self._read_events()):
                 self._emit(event)
                 self._db_logger.log_event(event)
+            # FIXME: _read_events() blocks _callback_queue
             while not self._callback_queue.empty():
                 event = self._callback_queue.get()
                 self._emit(event)
@@ -265,8 +266,11 @@ def main(args):
 if __name__ == '__main__':
     import argparse
     from collections.abc import Iterable
+    import json
+
     parser = argparse.ArgumentParser()
     parser.add_argument('paths', type=str, nargs='+')
+    parser.add_argument('--config_files', type=str, nargs='*', default=[])
 
     # Add settings.* to exec options
     items = []
@@ -286,9 +290,21 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    for config_file in args.config_files:
+        logger.info(f'{config_file} > settings')
+        with open(config_file, 'r') as fi:
+            cfg = json.load(fi)
+        for item in items:
+            if item in cfg:
+                value = type(getattr(settings, item))(cfg[item])
+                setattr(settings, item, value)
+                logger.info(f'settings.{item} = {value}')
+
+    logger.info(f'arguments > settings')
     for item in items:
-        if getattr(args, item) is not None:
-            setattr(settings, item, getattr(args, item))
-            logger.info(f'settings.{item} = {getattr(args, item)}')
+        value = getattr(args, item)
+        if value is not None and value != getattr(settings, item):
+            setattr(settings, item, value)
+            logger.info(f'settings.{item} = {value}')
 
     main(args)

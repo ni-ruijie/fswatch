@@ -181,14 +181,16 @@ class SQLEventLogger(Thread, SQLConnection):
         self._ndigits_uid = 4
         if not self.enabled:
             logger.warning('SQL is not enabled. Events will not be recorded in database.')
-        self._queue = Queue[InotifyEvent]()
+        self._queue = Queue()
         self._stopped_event = Event()
-        Thread.start(self)
+        if self.enabled:
+            Thread.start(self)
 
     def run(self) -> None:
         while not self._stopped_event.is_set():
-            if not self._queue.empty():
-                self._log_event(self._queue.get())
+            event = self._queue.get()
+            if event is not None:
+                self._log_event(event)
 
     def _timestamp_to_decimal(self, timestamp):
         microsec, sec = modf(timestamp)
@@ -204,7 +206,7 @@ class SQLEventLogger(Thread, SQLConnection):
     def _log_event(self, event: InotifyEvent):
         microsec, sec = self._timestamp_to_decimal(event._time)
 
-        with self.cursor() as cursor:
+        with self.transaction() as cursor:
             cursor.execute(
                 'SELECT unique_time FROM logs '
                 'WHERE unique_time >= %s AND unique_time < %s '
