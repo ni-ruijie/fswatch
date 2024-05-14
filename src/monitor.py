@@ -228,6 +228,8 @@ class Worker(threading.Thread):
 def main(args):
     dispatcher = Dispatcher()
     tracker = FileTracker()
+    for path in args.paths:
+        tracker.watch_dir(path)
     controller = MonitorController(dispatcher, tracker)
     logger.info(f'Monitoring {args.paths}.')
 
