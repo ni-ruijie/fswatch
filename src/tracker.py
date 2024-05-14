@@ -5,7 +5,7 @@ import configparser
 import csv
 import utils
 import warnings
-from typing import Dict, List, Tuple, TypeVar
+from typing import Dict, List, Tuple, TypeVar, Iterator
 from threading import Thread, Lock
 from loguru import logger
 from database.conn import SQLConnectionPool, dbconn
@@ -231,7 +231,9 @@ class GenericFile(BaseFile):
                             ret['add/del'].append((t, line, b[line]))
                         elif t == '-':
                             ret['add/del'].append((t, line, a[line]))
-                    return ret
+                    if ret['add/del']:
+                        return ret
+                    return {}
 
                 front[k] = x, history
 
@@ -302,6 +304,7 @@ class FileTracker:
         _create_dir(self._diff_dir)
 
         self._indexer = None  # manage the index of backup files and diff files
+        self._enabled = True
         cols = ('fid', 'path', 'version', 'format')
         if settings.tracker_indexer == 'csv':
             self._index_file = osp.join(self._dir, 'index.csv')
@@ -311,10 +314,26 @@ class FileTracker:
             pool = SQLConnectionPool(8)
             pool.init_conn()
             self._indexer = SQLIndexer('tracked_index', cols, pool)
-        logger.success(f'FileTracker: Using {self._indexer.__class__.__name__} as indexer.')
+            if not pool.enabled:
+                logger.warning('Attempting to use SQL indexer but SQL is not enabled. '
+                               'File tracker will be disabled.')
+                self._enabled = False
+        if self._enabled:
+            logger.success(f'FileTracker: Using {self._indexer.__class__.__name__} as indexer.')
+            
+    def if_enabled(func):
+        def inner(self, *args, **kwargs):
+            if self._enabled:
+                return func(self, *args, **kwargs)
+        return inner
 
     def _index(self, fid: int = None) -> Tuple[int, str, int, str]:
         return self._indexer.select(fid)
+    
+    @if_enabled
+    def __iter__(self) -> Iterator[Dict]:
+        for fid, path, version, format in self._indexer.select():
+            yield {'path': path, 'version': version, 'format': format}
     
     def _fid_for_path(self, path: str) -> str:
         return self._indexer.select2(path)
@@ -361,12 +380,14 @@ class FileTracker:
                     re.fullmatch(pattern, osp.relpath(path)):
                 return filetype.from_file(path)
     
+    @if_enabled
     def watch_or_compare(self, path: str, callback: callable = None) -> Thread:
         thread = Thread(target=self._watch_or_compare, args=(path, callback))
         thread.start()
         return thread
     
-    def _watch_or_compare(self, path: str, callback: callable) -> None:
+    def _watch_or_compare(self, path: str, callback: callable = None) -> None:
+        # XXX: This function uses 2 or 3 SQL connections, which could be reduced to 1
         cfg = self._match_pattern(path)
         if cfg is None:
             return
@@ -379,6 +400,11 @@ class FileTracker:
                         ExtendedInotifyConstants.EX_MODIFY_CONFIG, os.fsencode(path)))
             else:
                 self._watch_file(cfg)
+
+    @if_enabled
+    def watch_dir(self, path: str) -> None:
+        for file in os.listdir(path):
+            self._watch_or_compare(osp.join(path, file))
 
     def _watch_file(self, cfg: BaseFile) -> None:
         """Start tracking a file."""
@@ -403,6 +429,7 @@ class FileTracker:
                 os.remove(diff_file)
         return True
 
+    @if_enabled
     def checkout_file(self, path: str, version: int) -> dict:
         """Checkout a specified version of a file and return as dict,
         without rewriting the file.

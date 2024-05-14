@@ -72,13 +72,18 @@ class ConnectionSingleton:
         self._resource = None
         self._lock = Lock()
         self._pid = os.getpid()
+        self._enabled = settings.db_enabled
 
     @property
     def enabled(self) -> bool:
+        return self._enabled
+    
+    @property
+    def initialized(self) -> bool:
         return self._resource is not None
 
     def init_conn(self) -> None:
-        if not settings.db_enabled:
+        if not self._enabled:
             return
         if self._resource is None:
             with self._lock:
@@ -172,6 +177,8 @@ class SQLEventLogger(SQLConnection):
         super().__init__()
         self._ndigits_microsec = 6
         self._ndigits_uid = 4
+        if not self.enabled:
+            logger.warning('SQL is not enabled. Events will not be recorded in database.')
 
     def _timestamp_to_decimal(self, timestamp):
         microsec, sec = modf(timestamp)
@@ -179,6 +186,8 @@ class SQLEventLogger(SQLConnection):
         return microsec, sec
     
     def log_event(self, event: InotifyEvent):
+        if not self.enabled:
+            return
         microsec, sec = self._timestamp_to_decimal(event._time)
 
         with self.transaction(isolation_level='SERIALIZABLE') as cursor:

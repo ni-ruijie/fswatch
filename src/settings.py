@@ -19,7 +19,7 @@ controller_limit_threshold = 0.9
 buffer_queue_delay = 0.5
 
 # For database
-db_enabled = True  # TODO: consider the db_enabled = False case
+db_enabled = True
 db_host = 'localhost'
 db_user = 'root'
 db_password = 'password'

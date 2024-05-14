@@ -229,9 +229,9 @@ def main(args):
     dispatcher = Dispatcher()
     tracker = FileTracker()
     controller = MonitorController(dispatcher, tracker)
-    logger.info(f'Monitoring {args.path}.')
+    logger.info(f'Monitoring {args.paths}.')
 
-    worker = Worker(args.path, dispatcher, controller)
+    worker = Worker(args.paths, dispatcher, controller)
     worker.start()
     
     worker.join()
@@ -242,7 +242,7 @@ if __name__ == '__main__':
     import argparse
     from collections.abc import Iterable
     parser = argparse.ArgumentParser()
-    parser.add_argument('path', type=str, nargs='+')
+    parser.add_argument('paths', type=str, nargs='+')
 
     # Add settings.* to exec options
     items = []
@@ -251,6 +251,11 @@ if __name__ == '__main__':
             value = getattr(settings, item)
             if isinstance(value, Iterable) and not isinstance(value, str):
                 parser.add_argument(f'--{item}', type=type(value[0]), nargs='*', default=None)
+            elif isinstance(value, bool):
+                if value:
+                    parser.add_argument(f'--{item}', action='store_false')
+                else:
+                    parser.add_argument(f'--{item}', action='store_true')
             else:
                 parser.add_argument(f'--{item}', type=type(value), default=None)
             items.append(item)
