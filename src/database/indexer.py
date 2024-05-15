@@ -1,8 +1,9 @@
+from threading import Lock
 from typing import Callable, Iterable
 import collections.abc
 from abc import abstractmethod
 import csv
-from database.conn import SQLConnection
+from database.conn import SQLConnection, SQLConnectionPool
 
 
 __all__ = ['BaseIndexer', 'CSVIndexer', 'SQLIndexer']
@@ -38,10 +39,15 @@ class BaseIndexer:
     def delete(self, key, **kwargs) -> None:
         pass
 
+    @abstractmethod
+    def lock(self, name: str = None) -> None:
+        pass
+
 
 class CSVIndexer(BaseIndexer):
     def __init__(self, index_file, cols):
         super().__init__(cols)
+        self._lock = Lock()
         self._index_file = index_file
         self._index = self._key_for_key2 = self._nr_index = None
         self._load()
@@ -102,9 +108,12 @@ class CSVIndexer(BaseIndexer):
         del self._index[fid]
         del self._key_for_key2[path]
 
+    def lock(self, *args, **kwargs) -> Lock:
+        return self._lock
+
 
 class SQLIndexer(BaseIndexer):
-    def __init__(self, table: str, cols: tuple, conn: SQLConnection = None):
+    def __init__(self, table: str, cols: tuple, conn: SQLConnectionPool = None):
         super().__init__(cols)
         self._table = table
         self._conn = conn
@@ -185,3 +194,6 @@ class SQLIndexer(BaseIndexer):
             cursor.execute(
                 f'UPDATE {self._table} SET {assignments} WHERE {self._primary}=%s',
                 tuple(values) + (key,))
+            
+    def lock(self, name: str) -> None:
+        return self._conn.lock(name)

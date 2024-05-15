@@ -45,7 +45,7 @@ class Worker(threading.Thread):
         self._db_logger = SQLEventLogger()
         self._db_logger.init_conn()
 
-        self._callback_queue = Queue[InotifyEvent]()
+        self._callback_queue = Queue()
 
         for path in paths:
             self._add_dir_watch(os.fsencode(path))

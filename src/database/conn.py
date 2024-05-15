@@ -32,17 +32,24 @@ class CursorContext:
     
     def __exit__(self, exc_type, exc_value, exc_tb) -> None:
         self._cursor.close()
-        self._conn.commit()  # NOTE: why commit even outside transaction?
+        if exc_type is not None:
+            logger.warning(f'{self.__class__.__name__}: Suppress {exc_type.__name__} "{exc_value}" and rollback.')
+            self._conn.rollback()
+            return True
+        else:
+            self._conn.commit()  # NOTE: why commit even outside transaction?
 
 
 class TransactionContext(CursorContext):
     def __init__(self, conn: mysql.connector.connection.MySQLConnection, *args, **kwargs) -> None:
         super().__init__(conn)
-        self.args = args
-        self.kwargs = kwargs
+        self._args = args
+        if 'retry' in kwargs:
+            self._retry = kwargs.pop('retry')
+        self._kwargs = kwargs
 
     def __enter__ (self) -> mysql.connector.connection.MySQLCursor:
-        self._conn.start_transaction(*self.args, **self.kwargs)
+        self._conn.start_transaction(*self._args, **self._kwargs)
         return super().__enter__()
     
     def __exit__(self, exc_type, exc_value, exc_tb) -> None:
@@ -66,6 +73,22 @@ class ConnectionContext:
         self._sub_ctx.__exit__(exc_type, exc_value, exc_tb)
         self._conn.close()
         self._sem.__exit__(exc_type, exc_value, exc_tb)
+
+
+class ExLockContext:
+    def __init__(self, cursor_func: Callable, name: str) -> None:
+        self._cursor_func = cursor_func
+        self._name = name
+
+    def __enter__(self) -> None:
+        with self._cursor_func() as cursor:
+            cursor.execute('SELECT GET_LOCK(%s, -1)', (self._name,))
+            cursor.fetchall()
+
+    def __exit__(self, exc_type, exc_value, exc_tb) -> None:
+        with self._cursor_func() as cursor:
+            cursor.execute('SELECT RELEASE_LOCK(%s)', (self._name,))
+            cursor.fetchall()
 
 
 class ConnectionSingleton:
@@ -146,18 +169,22 @@ class SQLConnectionPool(SQLConnection):
         return res
     
     @ConnectionSingleton.lazy_init
-    def cursor(self, *args, **kwargs) -> CursorContext:
+    def cursor(self, *args, **kwargs) -> ConnectionContext:
         return ConnectionContext(
             self._pool, self._sem,
             CursorContext(None, *args, **kwargs)
         )
     
     @ConnectionSingleton.lazy_init
-    def transaction(self, *args, **kwargs) -> TransactionContext:
+    def transaction(self, *args, **kwargs) -> ConnectionContext:
         return ConnectionContext(
             self._pool, self._sem,
             TransactionContext(None, *args, **kwargs)
         )
+    
+    @ConnectionSingleton.lazy_init
+    def lock(self, name: str) -> ExLockContext:
+        return ExLockContext(self.cursor, name)
 
 
 class ConnectionThread(Thread):
@@ -179,6 +206,7 @@ class SQLEventLogger(Thread, SQLConnection):
         SQLConnection.__init__(self)
         self._ndigits_microsec = 6
         self._ndigits_uid = 4
+        self._max_retry = 0
         if not self.enabled:
             logger.warning('SQL is not enabled. Events will not be recorded in database.')
         self._queue = Queue()
@@ -190,7 +218,19 @@ class SQLEventLogger(Thread, SQLConnection):
         while not self._stopped_event.is_set():
             event = self._queue.get()
             if event is not None:
-                self._log_event(event)
+                for _ in range(self._max_retry+1):
+                    try:
+                        self._log_event(event)
+                        break
+                    except:
+                        pass
+                else:
+                    logger.warning(f'Cannot record {event} into table logs. Max retry exceeds')
+                    try:
+                        self._log_event(event, direct_to_aux=True)
+                    except Exception as e:
+                        logger.error(f'Cannot record {repr(event)} into table aux_logs either:'
+                                     f'{e.__class__.__name__} "{e}"')
 
     def _timestamp_to_decimal(self, timestamp):
         microsec, sec = modf(timestamp)
@@ -203,22 +243,23 @@ class SQLEventLogger(Thread, SQLConnection):
         self._queue.put(event)
     
     @ConnectionSingleton.lazy_init
-    def _log_event(self, event: InotifyEvent):
+    def _log_event(self, event: InotifyEvent, direct_to_aux: bool = False) -> None:
         microsec, sec = self._timestamp_to_decimal(event._time)
 
         with self.transaction() as cursor:
-            cursor.execute(
-                'SELECT unique_time FROM logs '
-                'WHERE unique_time >= %s AND unique_time < %s '
-                'ORDER BY unique_time DESC LIMIT 1',
-                (f'{sec}.{microsec}', f'{sec}.{microsec+1}'))
-            ret = cursor.fetchone()
-            if ret is not None:
-                latest, = ret
-                inc_id = int(str(latest)[-self._ndigits_uid:]) + 1
-            else:
-                inc_id = 0
-            if inc_id == 10**self._ndigits_uid:
+            inc_id = 0
+            if not direct_to_aux:
+                cursor.execute(
+                    'SELECT unique_time FROM logs '
+                    'WHERE unique_time >= %s AND unique_time < %s '
+                    'ORDER BY unique_time DESC LIMIT 1',
+                    (f'{sec}.{microsec}', f'{sec}.{microsec+1}'))
+                ret = cursor.fetchone()
+                if ret is not None:
+                    latest, = ret
+                    inc_id = int(str(latest)[-self._ndigits_uid:]) + 1
+
+            if direct_to_aux or inc_id == 10**self._ndigits_uid:
                 # In case we run out of 10000 uids within one microsecond
                 # NOTE: This occasion is rarely encountered
                 cursor.execute(
@@ -229,7 +270,7 @@ class SQLEventLogger(Thread, SQLConnection):
                 cursor.execute(
                     'INSERT INTO logs (unique_time, mask, src_path, dest_path, monitor_pid)'
                     'VALUES (%s, %s, %s, %s, %s)',
-                    (f'{sec}.{microsec}{inc_id}', event._mask, event._src_path, event._dest_path, self._pid))
+                    (f'{sec}.{microsec}{inc_id:0{self._ndigits_uid}d}', event._mask, event._src_path, event._dest_path, self._pid))
                 
     @ConnectionSingleton.lazy_init
     def query_event(self, from_time: datetime = None, to_time: datetime = None,

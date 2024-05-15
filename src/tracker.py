@@ -391,8 +391,7 @@ class FileTracker:
         cfg = self._match_pattern(path)
         if cfg is None:
             return
-        # FIXME: The following code does not synchronized between monitor processes.
-        with self._lock:
+        with self._indexer.lock(path):
             fid = self._fid_for_path(path)
             if fid is not None:
                 ret = self._compare_file(fid, cfg)
