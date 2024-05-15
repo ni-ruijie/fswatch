@@ -171,9 +171,16 @@ class IntervalScheduler(Thread):
     @property
     def interval(self) -> int:
         return self._interval
+    
+
+class BaseScheduler(Thread):
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.route = None
 
 
-class HistogramScheduler(Thread):
+class HistogramScheduler(BaseScheduler):
     """
     Send message either when events reach capacity or when time reaches interval.
     """
@@ -193,8 +200,6 @@ class HistogramScheduler(Thread):
         self._stopped_event = Event()
         self._timeout_event = Event()
         self._cur_time = 0
-
-        self.route = None
 
     def start(self) -> None:
         self._cur_time = time()
@@ -228,13 +233,12 @@ class HistogramScheduler(Thread):
             self._timeout_event.set()
 
 
-class ProxyScheduler:
+class ProxyScheduler(BaseScheduler):
     """
     Direct send message out.
     """
     def __init__(self, callback: Callable) -> None:
         self._callback = callback
-        self.route = None
 
     def start(self):
         pass

@@ -5,17 +5,17 @@ from typing import Iterable
 import re
 import os
 from functools import reduce
-from typing import List, Tuple, Iterator
+from typing import List, Tuple, Iterator, Dict
 import json
 from event import ExtendedInotifyConstants
 from threading import Lock
 import settings
 from loguru import logger
-from scheduler import HistogramScheduler, ProxyScheduler
+from scheduler import BaseScheduler, HistogramScheduler, ProxyScheduler
 import utils
 
 
-_name_to_scheduler = {
+_name_to_scheduler: Dict[str, BaseScheduler] = {
     '': ProxyScheduler, 'direct': ProxyScheduler, 'proxy': ProxyScheduler,
     'hist': HistogramScheduler, 'histogram': HistogramScheduler
 }
@@ -23,7 +23,7 @@ _name_to_scheduler = {
 
 class Route:
     def __init__(self, tag: str, pattern: re.Pattern, event: int, format: str,
-                 scheduler) -> None:
+                 scheduler: BaseScheduler) -> None:
         self.tag = tag
         self.title = ''
         self.description = ''

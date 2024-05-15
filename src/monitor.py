@@ -45,12 +45,14 @@ class Worker(threading.Thread):
         self._db_logger = SQLEventLogger()
         self._db_logger.init_conn()
 
+        self._buffer = InotifyBuffer(self._read_events)
         self._callback_queue = Queue()
 
         for path in paths:
             self._add_dir_watch(os.fsencode(path))
 
     def start(self):
+        self._buffer.start()
         super().start()
 
     @staticmethod
@@ -225,18 +227,17 @@ class Worker(threading.Thread):
 
     def run(self):
         while not self._stopped_event.is_set():
-            for event in InotifyBuffer._group_event(self._read_events()):
-                self._emit(event)
-                self._db_logger.log_event(event)
-            # FIXME: _read_events() blocks _callback_queue
-            while not self._callback_queue.empty():
-                event = self._callback_queue.get()
-                self._emit(event)
-                self._db_logger.log_event(event)
+            # Alternately read from _buffer and _callback_queue
+            for event in (self._buffer.read_event(),
+                          None if self._callback_queue.empty() else self._callback_queue.get()):
+                if event is not None:
+                    self._emit(event)
+                    self._db_logger.log_event(event)
 
     def stop(self):
         self._db_logger.stop()
         self._stopped_event.set()
+        self._buffer.stop()
 
 
 def main(args):

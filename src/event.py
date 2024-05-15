@@ -13,6 +13,7 @@ class ExtendedInotifyConstants(InotifyConstants):
     EX_BEGIN_MODIFY = 0x400000000
     EX_END_MODIFY = 0x800000000
     EX_MODIFY_CONFIG = 0x1000000000
+    EX_ALL_EX_EVENTS = 0xff00000000
 
 
 _tr_zh = {
@@ -191,7 +192,7 @@ class ExtendedEvent(InotifyEvent):
         super().__init__(None, mask, None, None,
                          src_path=src_path, dest_path=dest_path, event_time=event_time)
         self.override = None  # TODO: This extended event may contain and override sub-events
-        high = self._mask & 0xff00000000
+        high = self._mask & ExtendedInotifyConstants.EX_ALL_EX_EVENTS
         self.lsb = (high & -high) or (self._mask & -self._mask)
 
     @classmethod
