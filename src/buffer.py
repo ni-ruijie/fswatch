@@ -94,7 +94,8 @@ class InotifyBuffer(Thread):
                 for index, e0 in enumerate(grouped):
                     if e0.lsb == InotifyConstants.IN_MOVED_FROM:
                         grouped[index] = InotifyEvent.from_other(
-                            e0, mask=ExtendedInotifyConstants.EX_RENAME, dest_path=e._src_path)
+                            e0, mask=ExtendedInotifyConstants.EX_RENAME|InotifyConstants.IN_MOVED_TO,
+                            dest_path=e._src_path)
                     break
                 else:  # TODO: check self.queue
                     grouped.append(e)

@@ -1,3 +1,23 @@
+class _T:
+    """An option that contains multiple values"""
+    def __init__(self, data, dtype=None, nargs='*'):
+        self._data = data
+        self.dtype = dtype or type(data[0])
+        self.nargs = nargs
+
+    @classmethod
+    def default(cls, *args, dtype=None, nargs='*'):
+        return cls(args, dtype=dtype, nargs=nargs)
+    
+    def __iter__(self):
+        return iter(self._data)
+    
+    def __getitem__(self, index):
+        return self._data[index]
+    
+    def __str__(self):
+        return str(self._data)
+
 # For worker
 worker_every_path = False  # if true, use one worker thread (along with an inotify instance) for each path
 
@@ -13,6 +33,8 @@ route_patterns = (r'.*', r'.*', r'.*')  # N watching re patterns
 route_events = ('IN_ALL_EVENTS|EX_RENAME', 'EX_META', 'EX_MODIFY_CONFIG')  # N watching events
 # TODO: route_types = ('', '')  # N watching types
 route_formats = ('Event {ev_name} on {ev_src}', '{msg}', 'Modified {ev_src}')  # N output formats
+route_default_group = ''
+route_groups = {}  # if `tag in route_groups`, send `tag` to that list of groups, otherwise send to default
 
 # For controller
 basic_controller_interval = 3600
@@ -29,4 +51,5 @@ db_password = 'password'
 db_database = 'fswatch_db'
 
 # For debug only
-dispatcher_type = 'local'
+external_libs = _T.default(dtype=str)
+dispatcher_type = 'redis'

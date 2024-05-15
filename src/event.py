@@ -66,7 +66,7 @@ class InotifyEvent:
     def from_other(cls, other: 'InotifyEvent', mask=None, dest_path=None):
         return InotifyEvent(
             other._wd,
-            other._mask if mask is None else mask,
+            other._mask if mask is None else other._mask | mask,
             other._cookie,
             other._name,
             other._src_path,

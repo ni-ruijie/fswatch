@@ -6,9 +6,11 @@ import re
 import os
 from functools import reduce
 from typing import List, Tuple, Iterator
+import json
 from event import ExtendedInotifyConstants
 from threading import Lock
 import settings
+from loguru import logger
 
 
 class Route:
@@ -50,6 +52,31 @@ class BaseDispatcher:
         pass
 
 
+class RedisDispatcher(BaseDispatcher):
+    def __init__(self) -> None:
+        global notify_redis_store
+        super().__init__()
+        import sys
+        for lib in settings.external_libs:
+            sys.path.append(lib)
+            logger.info(f'Set PATH=$PATH:{lib}')
+        import notify_redis_store
+        self._alert = notify_redis_store.NotifyRedisStore()
+        self._default_group = settings.route_default_group
+        self._groups = settings.route_groups
+
+        self._lock = Lock()
+
+    def gen_data_msg(self, tag: str = 'logs', group: str = '',
+                     title: str = '', msg: str = '') -> dict:
+        groups = [group] if group else self._groups.get(tag, [self._default_group])
+        return {"data": [notify_redis_store.gen_data_message(tag, group, title, msg) for group in groups]}
+    
+    def emit(self, data: dict) -> None:
+        for d in data['data']:
+            self._alert.add(json.dumps(d))
+
+
 class LocalDispatcher(BaseDispatcher):
     def __init__(self) -> None:
         super().__init__()
@@ -87,5 +114,5 @@ class RabbitDispatcher(BaseDispatcher):
 
 
 def Dispatcher(*args, **kwargs):
-    dispatchers = {'local': LocalDispatcher, 'rabbitmq': RabbitDispatcher}
+    dispatchers = {'redis': RedisDispatcher, 'local': LocalDispatcher, 'rabbitmq': RabbitDispatcher}
     return dispatchers[settings.dispatcher_type](*args, **kwargs)

@@ -273,12 +273,17 @@ if __name__ == '__main__':
     parser.add_argument('--config_files', type=str, nargs='*', default=[])
 
     # Add settings.* to exec options
-    items = []
+    items = {}
     for item in dir(settings):
         if not item.startswith('_'):
             value = getattr(settings, item)
-            if isinstance(value, Iterable) and not isinstance(value, str):
-                parser.add_argument(f'--{item}', type=type(value[0]), nargs='*', default=None)
+            if isinstance(value, dict):
+                continue  # can only by modified by json config files
+            elif isinstance(value, Iterable) and not isinstance(value, str):
+                parser.add_argument(
+                    f'--{item}',
+                    type=value.dtype if hasattr(value, 'dtype') else type(value[0]),
+                    nargs='*', default=None)
             elif isinstance(value, bool):
                 if value:
                     parser.add_argument(f'--{item}', action='store_false')
@@ -286,7 +291,7 @@ if __name__ == '__main__':
                     parser.add_argument(f'--{item}', action='store_true')
             else:
                 parser.add_argument(f'--{item}', type=type(value), default=None)
-            items.append(item)
+            items[item] = value
 
     args = parser.parse_args()
 
@@ -296,14 +301,14 @@ if __name__ == '__main__':
             cfg = json.load(fi)
         for item in items:
             if item in cfg:
-                value = type(getattr(settings, item))(cfg[item])
+                value = type(items[item])(cfg[item])
                 setattr(settings, item, value)
                 logger.info(f'settings.{item} = {value}')
 
     logger.info(f'arguments > settings')
     for item in items:
         value = getattr(args, item)
-        if value is not None and value != getattr(settings, item):
+        if value is not None and value != items[item]:
             setattr(settings, item, value)
             logger.info(f'settings.{item} = {value}')
 
