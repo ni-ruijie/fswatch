@@ -12,6 +12,7 @@ from threading import Lock
 import settings
 from loguru import logger
 from scheduler import HistogramScheduler, ProxyScheduler
+import utils
 
 
 _name_to_scheduler = {
@@ -44,8 +45,7 @@ class Route:
             )
             scheduler = scheduler.split(' ')
             scheduler, args = scheduler[0], scheduler[1:]
-            args = [int(arg) for arg in args]
-            print(scheduler, args)
+            args = [int(arg) if i < 2 else arg for i, arg in enumerate(args)]  # TODO: use argparser
             scheduler = _name_to_scheduler[scheduler](
                 callback, *args)
             logger.info(f'Using scheduler {scheduler} for route {tag}')
@@ -85,7 +85,7 @@ class RedisDispatcher(BaseDispatcher):
         self._lock = Lock()
     
     def _emit(self, route: Route, data: dict) -> None:
-        tag, title, msg = route.tag, route.title, route.format.format(**data)
+        tag, title, msg = route.tag, route.title, utils.format(route.format, **data)
         for group in self._groups.get(tag, [self._default_group]):
             d = notify_redis_store.gen_data_message(tag, group, title, msg)
             self._alert.add(json.dumps(d))
@@ -100,7 +100,7 @@ class LocalDispatcher(BaseDispatcher):
             self._fs[tag] = open(f'.fswatch.{tag}.buf', 'ab')
 
     def _emit(self, route: Route, data: dict) -> None:
-        tag, title, msg = route.tag, route.title, route.format.format(**data)
+        tag, title, msg = route.tag, route.title, utils.format(route.format, **data)
         f = self._fs[tag]
         with self._lock:
             f.write((msg + '\n').encode())
@@ -122,7 +122,7 @@ class RabbitDispatcher(BaseDispatcher):
         self._channel.exchange_declare(exchange='logs', exchange_type='fanout')
 
     def _emit(self, route: Route, data: dict) -> None:
-        tag, title, msg = route.tag, route.title, route.format.format(**data)
+        tag, title, msg = route.tag, route.title, utils.format(route.format, **data)
         self._channel.basic_publish(exchange='logs', routing_key='', body=msg)
     
     def close(self) -> None:
