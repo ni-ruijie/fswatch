@@ -396,8 +396,10 @@ class FileTracker:
             if fid is not None:
                 ret = self._compare_file(fid, cfg)
                 if ret and callback is not None:
-                    callback(ExtendedEvent(
-                        ExtendedInotifyConstants.EX_MODIFY_CONFIG, os.fsencode(path)))
+                    event = ExtendedEvent(
+                        ExtendedInotifyConstants.EX_MODIFY_CONFIG, os.fsencode(path))
+                    event.add_field(diff=ret)
+                    callback(event)
             else:
                 self._watch_file(cfg)
 
@@ -412,12 +414,12 @@ class FileTracker:
         fid = self._insert_index(path=path, format=cfg.format)
         cfg.save(self._get_head_path(fid))
 
-    def _compare_file(self, fid: int, cfg2: BaseFile) -> bool:
-        """Compare current file with backup. Return True if updated."""
+    def _compare_file(self, fid: int, cfg2: BaseFile) -> FileDiff:
+        """Compare current file with backup. Return diff if updated."""
         cfg1 = cfg2.__class__.from_backup(self._get_head_path(fid))
         diff = cfg1.diff(cfg2)
         if not diff:
-            return False
+            return
         self._update_index(fid, version_inc=1)
         cfg2.save(self._get_head_path(fid))
         if self._max_depth != 0:
@@ -427,7 +429,7 @@ class FileTracker:
             diff_file = self._get_diff_path(fid, latest_ver - self._max_depth)
             if self._max_depth > 0 and osp.exists(diff_file):
                 os.remove(diff_file)
-        return True
+        return diff
 
     @if_enabled
     def checkout_file(self, path: str, version: int) -> dict:

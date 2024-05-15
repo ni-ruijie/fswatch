@@ -7,7 +7,7 @@ from time import time
 from collections import deque
 from typing import Callable, Deque, Generic, Optional, Tuple, TypeVar, Iterable
 from linux import *
-from event import ExtendedInotifyConstants, InotifyEvent
+from event import ExtendedInotifyConstants, InotifyEvent, ExtendedEvent
 import settings
 
 
@@ -93,7 +93,7 @@ class InotifyBuffer(Thread):
             if e.lsb == InotifyConstants.IN_MOVED_TO:
                 for index, e0 in enumerate(grouped):
                     if e0.lsb == InotifyConstants.IN_MOVED_FROM:
-                        grouped[index] = InotifyEvent.from_other(
+                        grouped[index] = ExtendedEvent.from_other(
                             e0, mask=ExtendedInotifyConstants.EX_RENAME|InotifyConstants.IN_MOVED_TO,
                             dest_path=e._src_path)
                     break

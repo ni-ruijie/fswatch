@@ -15,6 +15,17 @@ class ExtendedInotifyConstants(InotifyConstants):
     EX_MODIFY_CONFIG = 0x1000000000
 
 
+_tr_zh = {
+    ExtendedInotifyConstants.IN_CREATE: '创建',
+    ExtendedInotifyConstants.IN_OPEN: '打开',
+    ExtendedInotifyConstants.IN_ACCESS: '读取',
+    ExtendedInotifyConstants.IN_MODIFY: '写入',
+    ExtendedInotifyConstants.IN_DELETE: '删除',
+    ExtendedInotifyConstants.EX_RENAME: '重命名',
+    ExtendedInotifyConstants.EX_MODIFY_CONFIG: '修改配置'
+}
+
+
 class LinuxProcess:
     def __init__(self, pid: str) -> None:
         self._pid = pid
@@ -61,6 +72,8 @@ class InotifyEvent:
 
         self.lsb = self._mask & -self._mask
         self._event_name = None
+
+        self._fields = {}
 
     @classmethod
     def from_other(cls, other: 'InotifyEvent', mask=None, dest_path=None):
@@ -146,12 +159,23 @@ class InotifyEvent:
         masks = '|'.join(masks)
         return masks
     
+    @property
+    def event_name_zh(self):
+        return _tr_zh.get(self.lsb, self.event_name)
+    
+    def add_field(self, **kwargs):
+        self._fields = {**self._fields, **kwargs}
+    
     def get_fields(self) -> dict:
+        src_path = os.fsdecode(self._src_path)
         return {
-            'ev_src': os.fsdecode(self._src_path) if self._src_path is not None else None,
+            'ev_src': src_path,
+            'ev_src_ext': os.path.splitext(src_path)[-1],
             'ev_dest': os.fsdecode(self._dest_path) if self._dest_path is not None else None,
             'ev_time': datetime.fromtimestamp(self._time),
-            'ev_name': self.full_event_name
+            'ev_name': self.full_event_name,
+            'ev_name_zh': self.event_name_zh,
+            **self._fields
         }
     
     def __repr__(self):
@@ -167,6 +191,17 @@ class ExtendedEvent(InotifyEvent):
         super().__init__(None, mask, None, None,
                          src_path=src_path, dest_path=dest_path, event_time=event_time)
         self.override = None  # TODO: This extended event may contain and override sub-events
+        high = self._mask & 0xff00000000
+        self.lsb = (high & -high) or (self._mask & -self._mask)
+
+    @classmethod
+    def from_other(cls, other: 'InotifyEvent', mask=None, dest_path=None):
+        return ExtendedEvent(
+            other._mask if mask is None else other._mask | mask,
+            other._src_path,
+            dest_path=dest_path,
+            event_time=other._time
+        )
 
     @property
     def event_name(self):
