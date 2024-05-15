@@ -10,151 +10,16 @@
 import argparse
 import os
 import os.path as osp
-from collections import deque
 from time import time
 from threading import Thread, Lock, Event
 import sys
-from typing import Iterable, Callable, Final, Union
+from typing import Callable, Final
 from loguru import logger
 from dispatcher import BaseDispatcher
 from tracker import FileTracker
 import settings
 from event import ExtendedInotifyConstants, ExtendedEvent
-
-
-EPS = 1e-8
-
-
-class BaseMeter:
-    def __init__(self) -> None:
-        self._prev = None
-
-    def update(self, value: Union[int, float] = None) -> None:
-        pass
-
-    def get_prev(self) -> dict:
-        if self._prev is None:
-            self.get()
-        else:
-            self.update()
-        return self._prev
-
-    def get(self) -> dict:
-        pass
-    
-
-class SlidingAverageMeter(BaseMeter):
-    def __init__(self, duration: Union[int, float]) -> None:
-        super().__init__()
-        self._queue = deque()
-        self._duration = duration
-
-    @property
-    def duration(self):
-        return self._duration
-
-    def reset_duration(self, duration: Union[int, float]) -> None:
-        if duration > self._duration:
-            pass  # TODO: increase duration by time
-        self._duration = duration
-
-    def update(self, value: Union[int, float] = None) -> None:
-        now = time()
-        if value is not None:
-            self._queue.append((now, value))
-        while self._queue and self._queue[0][0] <= now - self._duration:
-            self._queue.popleft()
-
-    def get(self) -> dict:
-        self.update()
-        tot = sum(x[1] for x in self._queue)
-        avg = tot / (len(self._queue) + EPS)
-        self._prev = {'sum': tot, 'avg': avg}
-        return self._prev
-    
-
-class MovingAverageMeter(BaseMeter):
-    pass
-
-
-class IntervalScheduler(Thread):
-    """
-    Schedules the frequency of messages dynamically.
-
-    Parameters
-    ----------
-    callback: function
-        Called every interval. Returns a priority value ranged from [-1, 1].
-        A negative priority increase the interval while a positive one does
-        the opposite.
-
-    init_interval: int
-        The initial interval duration.
-    """
-    def __init__(self, callback: Callable[[], float], init_interval: int,
-                 min_interval: int = None, max_interval: int = None,
-                 stats: Iterable[SlidingAverageMeter] = None) -> None:
-        super().__init__()
-
-        self._callback = callback
-        self._interval = init_interval
-        self._min_interval = init_interval if min_interval is None else min_interval
-        self._max_interval = init_interval if max_interval is None else max_interval
-        if self._interval < self._min_interval or self._interval > self._max_interval \
-                or self._min_interval < 1:
-            raise ValueError("Bad interval values")
-        self._stats = stats or []
-
-        self._lock = Lock()
-        self._stopped_event = Event()
-        self._cur_time = 0
-
-    def start(self) -> None:
-        self._cur_time = time()
-        super().start()
-
-    def run(self) -> None:
-        timeout = self._interval
-        while not self._stopped_event.is_set():
-            if not self._stopped_event.wait(timeout):
-                self._cur_time = time()
-                priority = self._callback()
-                _prev_interval = self._interval
-                if priority < 0:
-                    self.increase()
-                elif priority > 0:
-                    self.decrease()
-                if self._interval != _prev_interval:
-                    logger.debug(f'{self} Interval {_prev_interval} -> {self._interval}')
-
-                now = time()
-                timeout = self._cur_time + self._interval - now
-                # XXX: Only in case callback takes more than an interval to complete
-                if timeout <= 0:
-                    logger.error(f'{self} Negative timeout {timeout}')
-                    timeout = self._min_interval
-
-
-    def stop(self) -> None:
-        self._stopped_event.set()
-
-    def _update_stats(self) -> None:
-        for stat in self._stats:
-            stat.reset_duration(self._interval)
-
-    def increase(self) -> int:
-        self._interval = min(self._max_interval, self._interval * 2)
-        self._update_stats()
-        return self._interval
-
-    def decrease(self) -> int:
-        self._interval = max(self._min_interval, self._interval // 2)
-        self._update_stats()
-        return self._interval
-
-    @property
-    def interval(self) -> int:
-        return self._interval
+from scheduler import EPS, SlidingAverageMeter, IntervalScheduler
 
 
 class Shell(Thread):
@@ -285,8 +150,7 @@ class MonitorController:
     def _emit(self, msg: str) -> None:
         for route in (ExtendedEvent(ExtendedInotifyConstants.EX_META).
                     select_routes(self._dispatcher.routes)):
-            self._dispatcher.emit(self._dispatcher.gen_data_msg(
-                tag=route.tag, msg=route.format.format(msg=msg)))
+            self._dispatcher.emit(route, msg=msg)
     
     def signal_inotify_stats(self, name: str, num: int = 1) -> None:
         Thread(target=self._signal_inotify_stats, args=(name, num)).start()

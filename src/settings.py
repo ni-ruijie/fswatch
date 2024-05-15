@@ -31,8 +31,9 @@ tracker_indexer = 'sql'  # options: csv, sql
 route_tags = ('logs', 'warnings', 'tracks')  # N destinations
 route_patterns = (r'.*', r'.*', r'.*')  # N watching re patterns
 route_events = ('IN_ALL_EVENTS|EX_RENAME', 'EX_META', 'EX_MODIFY_CONFIG')  # N watching events
-# TODO: route_types = ('', '')  # N watching types
+# TODO: route_types = ('', '')  # N watching types ('d' or 'f' for dirs and files)
 route_formats = ('Event {ev_name} on {ev_src}', '{msg}', 'Modified {ev_src}')  # N output formats
+route_schedulers = ('direct', 'direct', 'direct')
 route_default_group = ''
 route_groups = {}  # if `tag in route_groups`, send `tag` to that list of groups, otherwise send to default
 

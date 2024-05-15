@@ -221,8 +221,7 @@ class Worker(threading.Thread):
 
     def _emit(self, event):
         for route in event.select_routes(self._channel.routes):
-            self._channel.emit(self._channel.gen_data_msg(
-                tag=route.tag, msg=route.format.format(**event.get_fields())))
+            self._channel.emit(route, **event.get_fields())
 
     def run(self):
         while not self._stopped_event.is_set():

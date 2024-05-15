@@ -11,45 +11,62 @@ from event import ExtendedInotifyConstants
 from threading import Lock
 import settings
 from loguru import logger
+from scheduler import HistogramScheduler, ProxyScheduler
+
+
+_name_to_scheduler = {
+    '': ProxyScheduler, 'direct': ProxyScheduler, 'proxy': ProxyScheduler,
+    'hist': HistogramScheduler, 'histogram': HistogramScheduler
+}
 
 
 class Route:
-    def __init__(self, tag: str, pattern: re.Pattern, event: int, format: str):
+    def __init__(self, tag: str, pattern: re.Pattern, event: int, format: str,
+                 scheduler) -> None:
         self.tag = tag
+        self.title = ''
+        self.description = ''
         self.pattern = pattern
         self.event = event
         self.format = format
+        self.scheduler = scheduler
+        scheduler.route = self
 
     @classmethod
-    def parse_routes(cls) -> Iterator['Route']:
-        for tag, pattern, event, format in zip(
-                settings.route_tags, settings.route_patterns, settings.route_events, settings.route_formats):
+    def parse_routes(cls, callback) -> Iterator['Route']:
+        for tag, pattern, event, format, scheduler in zip(
+                settings.route_tags, settings.route_patterns,
+                settings.route_events, settings.route_formats, settings.route_schedulers):
             pattern = re.compile(os.fsencode(pattern))
             event = reduce(
                 lambda x, y: x | y,
                 [getattr(ExtendedInotifyConstants, e) for e in event.split('|')]
             )
-            yield Route(tag, pattern, event, format)
+            scheduler = scheduler.split(' ')
+            scheduler, args = scheduler[0], scheduler[1:]
+            args = [int(arg) for arg in args]
+            print(scheduler, args)
+            scheduler = _name_to_scheduler[scheduler](
+                callback, *args)
+            logger.info(f'Using scheduler {scheduler} for route {tag}')
+            yield Route(tag, pattern, event, format, scheduler)
 
 
 class BaseDispatcher:
     def __init__(self) -> None:
-        self.routes = list(Route.parse_routes())
+        self.routes = list(Route.parse_routes(self._emit))
+        for route in self.routes:
+            route.scheduler.start()
     
-    def emit(self, data: dict) -> None:
+    def emit(self, route: Route, **data) -> None:
+        route.scheduler.put(data)
+    
+    def _emit(self, route: Route, data: dict) -> None:
         pass
-
-    def gen_data_msg(self, tag: str = 'logs', group: str = '',
-                     title: str = '', msg: str = '') -> dict:
-        return dict(
-            tag=tag,
-            group=group,
-            title=title,
-            msg=msg
-        )
 
     def close(self) -> None:
-        pass
+        for route in self.routes:
+            route.scheduler.stop()
 
 
 class RedisDispatcher(BaseDispatcher):
@@ -66,14 +83,11 @@ class RedisDispatcher(BaseDispatcher):
         self._groups = settings.route_groups
 
         self._lock = Lock()
-
-    def gen_data_msg(self, tag: str = 'logs', group: str = '',
-                     title: str = '', msg: str = '') -> dict:
-        groups = [group] if group else self._groups.get(tag, [self._default_group])
-        return {"data": [notify_redis_store.gen_data_message(tag, group, title, msg) for group in groups]}
     
-    def emit(self, data: dict) -> None:
-        for d in data['data']:
+    def _emit(self, route: Route, data: dict) -> None:
+        tag, title, msg = route.tag, route.title, route.format.format(**data)
+        for group in self._groups.get(tag, [self._default_group]):
+            d = notify_redis_store.gen_data_message(tag, group, title, msg)
             self._alert.add(json.dumps(d))
 
 
@@ -85,10 +99,11 @@ class LocalDispatcher(BaseDispatcher):
         for tag in settings.route_tags:
             self._fs[tag] = open(f'.fswatch.{tag}.buf', 'ab')
 
-    def emit(self, data: dict) -> None:
-        f = self._fs[data['tag']]
+    def _emit(self, route: Route, data: dict) -> None:
+        tag, title, msg = route.tag, route.title, route.format.format(**data)
+        f = self._fs[tag]
         with self._lock:
-            f.write((data['msg'] + '\n').encode())
+            f.write((msg + '\n').encode())
             f.flush()
 
     def close(self) -> None:
@@ -106,8 +121,9 @@ class RabbitDispatcher(BaseDispatcher):
 
         self._channel.exchange_declare(exchange='logs', exchange_type='fanout')
 
-    def emit(self, data: dict) -> None:
-        self._channel.basic_publish(exchange='logs', routing_key='', body=data['msg'])
+    def _emit(self, route: Route, data: dict) -> None:
+        tag, title, msg = route.tag, route.title, route.format.format(**data)
+        self._channel.basic_publish(exchange='logs', routing_key='', body=msg)
     
     def close(self) -> None:
         self._channel.close()
