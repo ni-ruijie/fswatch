@@ -8,7 +8,7 @@ import warnings
 from typing import Dict, List, Tuple, TypeVar, Iterator
 from threading import Thread, Lock
 from loguru import logger
-from database.conn import SQLConnectionPool, dbconn
+from database.conn import SQLConnection, SQLConnectionPool
 from database.indexer import *
 from event import ExtendedInotifyConstants, ExtendedEvent
 import settings
@@ -486,6 +486,7 @@ def _test_tracker():
         osp.expanduser('~/test/configs/foo.ini'),
         osp.expanduser('~/test/configs/bar.ini')
     )
+    dbconn = SQLConnection()
     dbconn.init_conn()
     
     def clear_all():

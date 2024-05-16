@@ -60,6 +60,8 @@ Inotify事件，主要为
 ```python
 >>> from database.conn import SQLEventLogger
 >>> from datetime import datetime
+>>> from utils import overwrite_settings
+>>> overwrite_settings(argv=['--config_files', 'configs/db_config.json'])
 >>> dbconn = SQLEventLogger()
 >>> dbconn.query_event(from_time=datetime(2024, 5, 13, 12), to_time=datetime(2024, 5, 13, 15))  # 查询 2024/5/13 12点到15点的日志
 ```

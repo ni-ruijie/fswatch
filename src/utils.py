@@ -3,15 +3,19 @@ import os.path as osp
 import json
 import string
 from tabulate import tabulate
+from loguru import logger
+import settings
 
 
 def load_json(path: str) -> dict:
     with open(path, 'r') as fi:
         return json.load(fi)
 
+
 def save_json(obj: dict, path: str) -> None:
     with open(path, 'w') as fo:
         json.dump(obj, fo)
+
 
 class Formatter(string.Formatter):
     def format_field(self, value, format_spec: str):
@@ -25,8 +29,61 @@ class Formatter(string.Formatter):
             except:
                 pass
         return super().format_field(value, format_spec)
-    
+
+
 _fmt = Formatter()
+
 
 def format(s, **kwargs):
     return _fmt.format(s, **kwargs)
+
+
+def overwrite_settings(parser=None, argv=None):
+    import argparse
+    from collections.abc import Iterable
+    import json
+
+    parser = parser or argparse.ArgumentParser()
+    parser.add_argument('--config_files', type=str, nargs='*', default=[])
+
+    # Add settings.* to exec options
+    items = {}
+    for item in dir(settings):
+        if not item.startswith('_'):
+            value = getattr(settings, item)
+            if isinstance(value, dict):
+                continue  # can only by modified by json config files
+            elif isinstance(value, Iterable) and not isinstance(value, str):
+                parser.add_argument(
+                    f'--{item}',
+                    type=value.dtype if hasattr(value, 'dtype') else type(value[0]),
+                    nargs='*', default=None)
+            elif isinstance(value, bool):
+                if value:
+                    parser.add_argument(f'--{item}', action='store_false')
+                else:
+                    parser.add_argument(f'--{item}', action='store_true')
+            else:
+                parser.add_argument(f'--{item}', type=type(value), default=None)
+            items[item] = value
+
+    args = parser.parse_args(argv.split(' ') if type(argv) == str else argv)
+
+    for config_file in args.config_files:
+        logger.info(f'{config_file} > settings')
+        with open(config_file, 'r') as fi:
+            cfg = json.load(fi)
+        for item in items:
+            if item in cfg:
+                value = type(items[item])(cfg[item])
+                setattr(settings, item, value)
+                logger.info(f'settings.{item} = {repr(value)}')
+
+    logger.info(f'arguments > settings')
+    for item in items:
+        value = getattr(args, item)
+        if value is not None and value != items[item]:
+            setattr(settings, item, value)
+            logger.info(f'settings.{item} = {repr(value)}')
+
+    return args

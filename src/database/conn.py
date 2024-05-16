@@ -320,6 +320,3 @@ class SQLEventLogger(Thread, SQLConnection):
 
     def stop(self):
         self._stopped_event.set()
-
-
-dbconn = SQLConnection()  # NOTE: for main thread only!
