@@ -15,6 +15,9 @@ if macros.TEST_OUTFILE:
     ), 'w')
 
 
+_levels = {level: i for i, level in enumerate(('TRACE', 'DEBUG', 'INFO', 'SUCCESS', 'WARNING', 'ERROR', 'CRITICAL'))}
+
+
 class Logger:
     def __init__(self):
         self._options = None
@@ -49,6 +52,8 @@ class Logger:
         __self._log("CRITICAL", False, __self._options, __message, args, kwargs)
 
     def _log(self, level, from_decorator, options, message, args, kwargs):
+        if _levels[level] < _levels[macros.LOG_LEVEL]:
+            return
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ansi_set = ''
         ansi_reset = ''

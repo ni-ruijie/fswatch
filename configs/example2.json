@@ -1,0 +1,7 @@
+{
+    "route_patterns": [".*"],
+    "route_events": ["IN_ALL_EVENTS"],
+    "route_formats": ["{from_time} ~ {to_time}: {count} events\n{histogram:tab}"],
+    "route_schedulers": ["histogram 30 -1 ev_src"],
+    "route_tags": ["logs"]
+}

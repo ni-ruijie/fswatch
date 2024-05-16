@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+
 import ctypes
 import struct
 import threading
@@ -90,7 +92,7 @@ class Worker(threading.Thread):
                 event_list.append(InotifyEvent(wd, mask, cookie, name, b''))
                 continue
             if mask & InotifyConstants.IN_IGNORED:
-                logger.warning('Event ignored')
+                # logger.warning('Event ignored')
                 event_list.append(InotifyEvent(wd, mask, cookie, name, b''))
                 continue
 

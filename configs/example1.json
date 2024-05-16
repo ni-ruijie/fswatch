@@ -1,0 +1,6 @@
+{
+    "route_tags": ["py", "cc"],
+    "route_events": ["IN_ALL_EVENTS|EX_RENAME", "IN_DELETE"],
+    "route_patterns": [".*\\.py", ".*\\.cc"],
+    "route_formats": ["Event {ev_name} on {ev_src}", "Event {ev_name} on {ev_src}"]
+}

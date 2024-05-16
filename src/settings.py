@@ -39,7 +39,7 @@ route_default_group = ''
 route_groups = {}  # if `tag in route_groups`, send `tag` to that list of groups, otherwise send to default
 
 # For controller
-basic_controller_interval = 3600
+controller_basic_interval = 3600
 controller_limit_threshold = 0.9
 
 # For delay queue

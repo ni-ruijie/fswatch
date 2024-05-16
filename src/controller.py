@@ -58,7 +58,7 @@ class MonitorController:
         self._tracker = tracker
         # By using this flag, we want overflow be instantly but not frequenty notified
         self._warned_overflow = False
-        duration = settings.basic_controller_interval
+        duration = settings.controller_basic_interval
         self._stats = {
             self.OVERFlOW: SlidingAverageMeter(duration),
             self.READ: SlidingAverageMeter(duration),
@@ -143,14 +143,14 @@ class MonitorController:
 
         procs = MonitorController.get_inotify_procs()
         fields['total_instances'] = sum(len(watches) for watches in procs.values())
-        fields['total_watches'] = sum(procs[str(os.getpid())])
+        fields['total_watches'] = sum(procs.get(str(os.getpid()), []))
 
         return fields
     
-    def _emit(self, msg: str) -> None:
+    def _emit(self, msg: str, **kwargs) -> None:
         for route in (ExtendedEvent(ExtendedInotifyConstants.EX_META).
                     select_routes(self._dispatcher.routes)):
-            self._dispatcher.emit(route, msg=msg)
+            self._dispatcher.emit(route, msg=msg, **kwargs)
     
     def signal_inotify_stats(self, name: str, num: int = 1) -> None:
         Thread(target=self._signal_inotify_stats, args=(name, num)).start()
@@ -161,7 +161,11 @@ class MonitorController:
                 raise KeyError(f"Unknown key {name}")
             self._stats[name].update(num)
             if name == self.OVERFlOW and not self._warned_overflow:
-                self._emit('Inotify overflow occurred')
+                self._emit(
+                    'Inotify overflow occurred',
+                    msg_zh=
+                    '发生事件队列溢出'
+                )
                 self._warned_overflow = True  # TODO: unset this flag sometime later
 
     def _warn_limits(self) -> float:
@@ -173,6 +177,11 @@ class MonitorController:
                 f'Used instances: {info["total_instances"]} / {info["max_user_instances"]} '
                 f'({instance_used*100:.2f}%)\n'
                 f'Used watches: {info["total_watches"]} / {info["max_user_watches"]} '
+                f'({watch_used*100:.2f}%)',
+                msg_zh=
+                f'已用 instance 数: {info["total_instances"]} / {info["max_user_instances"]} '
+                f'({instance_used*100:.2f}%)\n'
+                f'已用 watch 数: {info["total_watches"]} / {info["max_user_watches"]} '
                 f'({watch_used*100:.2f}%)'
             )
             return -1  # lower the priority since we have already sent messages
@@ -188,7 +197,12 @@ class MonitorController:
                 f'Over past {self._stats[self.OVERFlOW].duration} secs: '
                 f'{sums[self.READ][1]} reads, '
                 f'{sums[self.EVENT][1]} events, '
-                f'{sums[self.OVERFlOW][1]} overflows'
+                f'{sums[self.OVERFlOW][1]} overflows',
+                msg_zh=
+                f'在 {self._stats[self.OVERFlOW].duration} 秒内: '
+                f'读事件 {sums[self.READ][1]} 次, '
+                f'读出事件 {sums[self.EVENT][1]} 个, '
+                f'发生溢出 {sums[self.OVERFlOW][1]} 次'
             )
         if ope > prev_ope:
             return 1  # the more overflow events, the higher priority

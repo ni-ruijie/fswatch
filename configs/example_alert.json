@@ -1,0 +1,11 @@
+{
+    "tracker_patterns": [],
+    "tracker_filetypes": [],
+    "route_patterns": [".*many.*", ".*"],
+    "route_events": ["IN_CREATE|IN_DELETE|EX_RENAME", "EX_META"],
+    "route_formats": ["Test: Name {ev_name}, Time {ev_time}, Path {ev_src} ({ev_dest:!none})", "Alert:\n{msg}"],
+    "route_tags": ["log", "alert"],
+    "dispatcher_type": "local",
+    "db_enabled": false,
+    "controller_basic_interval": 10
+}
