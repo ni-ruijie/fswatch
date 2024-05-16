@@ -91,9 +91,17 @@ class HistogramMeter(BaseMeter):
     @property
     def size(self) -> int:
         return self._cnt
+    
+
+class BaseScheduler(Thread):
+    def __init__(self, callback: Callable) -> None:
+        super().__init__()
+
+        self._callback = callback
+        self.route = None
 
 
-class IntervalScheduler(Thread):
+class IntervalScheduler(BaseScheduler):
     """
     Schedules the frequency of messages dynamically.
 
@@ -110,9 +118,8 @@ class IntervalScheduler(Thread):
     def __init__(self, callback: Callable[[], float], init_interval: int,
                  min_interval: int = None, max_interval: int = None,
                  stats: Iterable[SlidingAverageMeter] = None) -> None:
-        super().__init__()
+        super().__init__(callback)
 
-        self._callback = callback
         self._interval = init_interval
         self._min_interval = init_interval if min_interval is None else min_interval
         self._max_interval = init_interval if max_interval is None else max_interval
@@ -171,13 +178,6 @@ class IntervalScheduler(Thread):
     @property
     def interval(self) -> int:
         return self._interval
-    
-
-class BaseScheduler(Thread):
-    def __init__(self) -> None:
-        super().__init__()
-
-        self.route = None
 
 
 class HistogramScheduler(BaseScheduler):
@@ -187,9 +187,8 @@ class HistogramScheduler(BaseScheduler):
     def __init__(self, callback: Callable,
                  capacity: int = 100, interval: int = None,
                  stats_key: str = 'ev_name') -> None:
-        super().__init__()
+        super().__init__(callback)
 
-        self._callback = callback
         self._capacity = capacity
         self._interval = interval
         if interval is not None:
@@ -238,7 +237,7 @@ class ProxyScheduler(BaseScheduler):
     Direct send message out.
     """
     def __init__(self, callback: Callable) -> None:
-        self._callback = callback
+        super().__init__(callback)
 
     def start(self):
         pass

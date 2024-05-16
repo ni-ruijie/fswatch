@@ -1,10 +1,20 @@
+import macros
 from abc import abstractmethod
 from math import modf
 from datetime import datetime
+from time import time
 from typing import Callable
 from threading import Thread, Lock, Semaphore, Event
-import mysql.connector
-import mysql.connector.pooling
+if macros.LIB_SQL == 'mysql.connector':
+    import mysql.connector as libsql
+    from mysql.connector.connection import MySQLConnection
+    from mysql.connector.connection import MySQLCursor
+    from mysql.connector.pooling import MySQLConnectionPool
+elif macros.LIB_SQL == 'pymysql':
+    import pymysql as libsql
+    from pymysql.connections import Connection as MySQLConnection
+    from pymysql.cursors import Cursor as MySQLCursor
+    from database.pymysqlpool import ConnectionPool as MySQLConnectionPool
 from queue import Queue
 import os
 from event import InotifyEvent, ExtendedEvent
@@ -22,11 +32,11 @@ def _dbconfig():
 
 
 class CursorContext:
-    def __init__(self, conn: mysql.connector.connection.MySQLConnection) -> None:
+    def __init__(self, conn: MySQLConnection) -> None:
         self._conn = conn
         self._cursor = None
 
-    def __enter__ (self) -> mysql.connector.connection.MySQLCursor:
+    def __enter__ (self) -> MySQLCursor:
         self._cursor = self._conn.cursor()
         return self._cursor
     
@@ -41,30 +51,35 @@ class CursorContext:
 
 
 class TransactionContext(CursorContext):
-    def __init__(self, conn: mysql.connector.connection.MySQLConnection, *args, **kwargs) -> None:
+    def __init__(self, conn: MySQLConnection, *args, **kwargs) -> None:
         super().__init__(conn)
         self._args = args
         if 'retry' in kwargs:
             self._retry = kwargs.pop('retry')
         self._kwargs = kwargs
 
-    def __enter__ (self) -> mysql.connector.connection.MySQLCursor:
-        self._conn.start_transaction(*self._args, **self._kwargs)
-        return super().__enter__()
+    if macros.LIB_SQL == 'mysql.connector':
+        def __enter__(self) -> MySQLCursor:
+            self._conn.start_transaction(*self._args, **self._kwargs)
+            return super().__enter__()
+    elif macros.LIB_SQL == 'pymysql':
+        def __enter__(self) -> MySQLCursor:
+            self._conn.begin()  # isolation level ignored
+            return super().__enter__()
     
     def __exit__(self, exc_type, exc_value, exc_tb) -> None:
         super().__exit__(exc_type, exc_value, exc_tb)
 
 
 class ConnectionContext:
-    def __init__(self, pool: mysql.connector.pooling.MySQLConnectionPool,
+    def __init__(self, pool: MySQLConnectionPool,
                  sem: Semaphore, sub_ctx: CursorContext) -> None:
         self._pool = pool
         self._sem = sem
         self._sub_ctx: CursorContext = sub_ctx
         self._conn = None
     
-    def __enter__(self) -> mysql.connector.connection.MySQLCursor:
+    def __enter__(self) -> MySQLCursor:
         self._sem.__enter__()
         self._sub_ctx._conn = self._conn = self._pool.get_connection()
         return self._sub_ctx.__enter__()
@@ -130,11 +145,11 @@ class SQLConnection(ConnectionSingleton):
         super().__init__()
 
     @property
-    def _conn(self) -> mysql.connector.connection.MySQLConnection:
+    def _conn(self) -> MySQLConnection:
         return self._resource
 
     def _init_resource(self):
-        res = mysql.connector.connect(**_dbconfig())
+        res = libsql.connect(**_dbconfig())
         logger.success(f'{self}: Connection established.')
         return res
     
@@ -158,11 +173,11 @@ class SQLConnectionPool(SQLConnection):
         self._sem = Semaphore(pool_size)
 
     @property
-    def _pool(self) -> mysql.connector.pooling.MySQLConnectionPool:
+    def _pool(self) -> MySQLConnectionPool:
         return self._resource
 
     def _init_resource(self):
-        res = mysql.connector.pooling.MySQLConnectionPool(
+        res = MySQLConnectionPool(
             pool_size=self._pool_size,
             **_dbconfig()
         )
@@ -206,7 +221,7 @@ class SQLEventLogger(Thread, SQLConnection):
         SQLConnection.__init__(self)
         self._ndigits_microsec = 6
         self._ndigits_uid = 4
-        self._max_retry = 0
+        self._max_retry = 3
         if not self.enabled:
             logger.warning('SQL is not enabled. Events will not be recorded in database.')
         self._queue = Queue()
@@ -229,7 +244,7 @@ class SQLEventLogger(Thread, SQLConnection):
                     try:
                         self._log_event(event, direct_to_aux=True)
                     except Exception as e:
-                        logger.error(f'Cannot record {repr(event)} into table aux_logs either:'
+                        logger.error(f'Cannot record {repr(event)} into table aux_logs either: '
                                      f'{e.__class__.__name__} "{e}"')
 
     def _timestamp_to_decimal(self, timestamp):
@@ -296,6 +311,8 @@ class SQLEventLogger(Thread, SQLConnection):
                 f'SELECT unique_time, mask, src_path, dest_path, monitor_pid FROM logs {conditions}')
             ret = cursor.fetchall()
             for unique_time, mask, src_path, dest_path, monitor_pid in ret:
+                if isinstance(mask, bytes):
+                    mask = int.from_bytes(mask, 'big')
                 events.append(ExtendedEvent(
                     mask, src_path, dest_path, datetime.fromtimestamp(float(unique_time))))
             # TODO: (Optional) check aux_logs

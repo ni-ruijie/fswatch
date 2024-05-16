@@ -143,7 +143,7 @@ class MonitorController:
 
         procs = MonitorController.get_inotify_procs()
         fields['total_instances'] = sum(len(watches) for watches in procs.values())
-        fields['total_watches'] = sum(sum(watches) for watches in procs.values())
+        fields['total_watches'] = sum(procs[str(os.getpid())])
 
         return fields
     
