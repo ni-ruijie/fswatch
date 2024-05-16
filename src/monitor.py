@@ -54,6 +54,7 @@ class Worker(threading.Thread):
     def start(self):
         self._buffer.start()
         super().start()
+        self._db_logger.start()
 
     @staticmethod
     def _parse_event_buffer(event_buffer):

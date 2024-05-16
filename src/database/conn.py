@@ -226,6 +226,8 @@ class SQLEventLogger(Thread, SQLConnection):
             logger.warning('SQL is not enabled. Events will not be recorded in database.')
         self._queue = Queue()
         self._stopped_event = Event()
+
+    def start(self):
         if self.enabled:
             Thread.start(self)
 
@@ -246,6 +248,9 @@ class SQLEventLogger(Thread, SQLConnection):
                     except Exception as e:
                         logger.error(f'Cannot record {repr(event)} into table aux_logs either: '
                                      f'{e.__class__.__name__} "{e}"')
+            if macros.TEST_SQL_DELAY:
+                elapsed = time() - event._time
+                logger.trace(f'SQL delayed {elapsed} secs')
 
     def _timestamp_to_decimal(self, timestamp):
         microsec, sec = modf(timestamp)

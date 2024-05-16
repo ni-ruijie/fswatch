@@ -1,13 +1,24 @@
 # Provide basic logging functions.
 # A simple replacement of the loguru package (default format).
 
+import macros
+import os
 from datetime import datetime
 import colorama
+from threading import Lock
+
+
+if macros.TEST_OUTFILE:
+    _f = open(os.path.join(
+        os.path.split(macros.__file__)[0],
+        macros.TEST_OUTFILE.format(time=datetime.now(), pid=os.getpid())
+    ), 'w')
 
 
 class Logger:
     def __init__(self):
         self._options = None
+        self._lock = Lock()
 
     def trace(__self, __message, *args, **kwargs):  # noqa: N805
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'TRACE'``."""
@@ -41,7 +52,9 @@ class Logger:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ansi_set = ''
         ansi_reset = ''
-        if level == 'DEBUG':
+        if level == 'TRACE':
+            ansi_set, ansi_reset = colorama.Fore.LIGHTCYAN_EX, colorama.Fore.RESET
+        elif level == 'DEBUG':
             ansi_set, ansi_reset = colorama.Fore.LIGHTBLUE_EX, colorama.Fore.RESET
         elif level == 'INFO':
             ansi_set, ansi_reset = colorama.Style.BRIGHT, colorama.Style.NORMAL
@@ -55,6 +68,9 @@ class Logger:
             ansi_set, ansi_reset = colorama.Back.RED, colorama.Back.RESET
             
         print(f'{colorama.Fore.GREEN}{now}{colorama.Fore.RESET} | {ansi_set}{level:8s}{ansi_reset} | {ansi_set}{message}{ansi_reset}')
+        if macros.TEST_OUTFILE:
+            with self._lock:
+                print(f'{now} | {level:8s} | {message}', file=_f)
 
 
 logger = Logger()
