@@ -308,7 +308,7 @@ class SQLEventLogger(Thread, SQLConnection):
         if mask:
             conditions.append(f'(mask & {mask} > 0)')
         if pid:
-            conditions.append(f'pid = {pid}')
+            conditions.append(f'monitor_pid = {pid}')
         conditions = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
         events = []
         with self.cursor() as cursor:
