@@ -12,9 +12,9 @@ from loguru import logger
 from database.conn import SQLEventLogger
 from linux import *
 from tracker import FileTracker
-from dispatcher import BaseDispatcher, Dispatcher
+from dispatcher import BaseDispatcher, Dispatcher, Route
 from controller import MonitorController
-from event import InotifyEvent
+from event import *
 from buffer import InotifyBuffer
 import settings
 
@@ -26,7 +26,8 @@ DEFAULT_EVENT_BUFFER_SIZE = DEFAULT_NUM_EVENTS * (EVENT_SIZE + 16)
 
 class Worker(threading.Thread):
     def __init__(self, paths: List[str], channel: BaseDispatcher,
-                 controller: MonitorController, watch_link: bool = True):
+                 controller: MonitorController, watch_link: bool = True,
+                 mask: int = InotifyConstants.IN_ALL_EVENTS):
         super().__init__()
         self._stopped_event = threading.Event()
         self._channel = channel
@@ -35,8 +36,6 @@ class Worker(threading.Thread):
 
         self._lock = threading.Lock()
         self._fd = inotify_init()
-        logger.debug(f'pid: {os.getpid()}')
-        logger.debug(f'fd: {self._fd}')
         self._wd_for_path = {}
         self._path_for_wd = {}
         # These are used for watching symbolic links
@@ -44,12 +43,14 @@ class Worker(threading.Thread):
         self._path_for_link = {}  # link -> unique target
 
         self._watch_link = watch_link
+        self._mask = mask
         self._db_logger = SQLEventLogger()
         self._db_logger.init_conn()
 
         self._buffer = InotifyBuffer(self._read_events)
         self._callback_queue = Queue()
 
+        logger.debug(f'Worker {self}: Watching {paths} using Inotify instance {self._fd}')
         for path in paths:
             self._add_dir_watch(os.fsencode(path))
 
@@ -104,13 +105,13 @@ class Worker(threading.Thread):
             src_path_d = os.fsdecode(src_path)
             if event.is_create_file:
                 if osp.islink(src_path):
-                    self._add_link_watch(src_path)
+                    self._add_link_watch(src_path, self._mask)
                 elif osp.isfile(src_path):
                     self._controller._tracker.watch_or_compare(src_path_d, self._queue_for_emit)
             elif event.is_modify_file:
                 if osp.islink(src_path):  # e.g., ln -sfn
                     self._rm_link_watch(src_path)
-                    self._add_link_watch(src_path)
+                    self._add_link_watch(src_path, self._mask)
                 elif osp.isfile(src_path):
                     # event.select_procs()
                     # logger.success(event._proc)
@@ -244,19 +245,28 @@ class Worker(threading.Thread):
 
 
 def main(args):
+    logger.info(f'Monitor pid {os.getpid()}')
+
     dispatcher = Dispatcher()
+    mask = InotifyConstants.IN_CREATE | InotifyConstants.IN_DELETE_SELF | InotifyConstants.IN_MODIFY
+    for route in dispatcher.routes:
+        mask |= route.event & ~ExtendedInotifyConstants.EX_ALL_EX_EVENTS
+    mask |= Route.parse_mask_from_str(settings.worker_extra_mask)
+        
+    logger.info(f'Using Inotify mask 0x{mask:08x} ({ExtendedEvent(mask).full_event_name})')
+
     tracker = FileTracker()
     for path in args.paths:
         tracker.watch_dir(path)
+
     controller = MonitorController(dispatcher, tracker)
-    logger.info(f'Monitoring {args.paths}.')
 
     workers = []
     if settings.worker_every_path:
         for path in args.paths:
-            workers.append(Worker([path], dispatcher, controller))
+            workers.append(Worker([path], dispatcher, controller, mask=mask))
     else:
-        workers = [Worker(args.paths, dispatcher, controller)]
+        workers = [Worker(args.paths, dispatcher, controller, mask=mask)]
     
     for worker in workers:
         worker.start()

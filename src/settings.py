@@ -18,9 +18,9 @@ class _T:
     def __str__(self):
         return str(self._data)
 
-# For worker
+# For monitor and all workers
 worker_every_path = False  # if true, use one worker thread (along with an inotify instance) for each path
-# TODO: worker_extra_mask = ''  # record additional inotify events to database, or only record route_events if not set
+worker_extra_mask = ''  # record additional inotify events to database, or only record route_events if not set
 
 # For file tracking
 tracker_cachedir = '.track'

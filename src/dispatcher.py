@@ -33,16 +33,20 @@ class Route:
         self.scheduler = scheduler
         scheduler.route = self
 
+    @staticmethod
+    def parse_mask_from_str(event: str) -> int:
+        return reduce(
+            lambda x, y: x | y,
+            [getattr(ExtendedInotifyConstants, e) if e else 0 for e in event.split('|')]
+        )
+
     @classmethod
     def parse_routes(cls, callback) -> Iterator['Route']:
         for tag, pattern, event, format, scheduler in zip(
                 settings.route_tags, settings.route_patterns,
                 settings.route_events, settings.route_formats, settings.route_schedulers):
             pattern = re.compile(os.fsencode(pattern))
-            event = reduce(
-                lambda x, y: x | y,
-                [getattr(ExtendedInotifyConstants, e) for e in event.split('|')]
-            )
+            event = Route.parse_mask_from_str(event)
             scheduler = scheduler.split(' ')
             scheduler, args = scheduler[0], scheduler[1:]
             args = [int(arg) if i < 2 else arg for i, arg in enumerate(args)]  # TODO: use argparser
@@ -129,6 +133,6 @@ class RabbitDispatcher(BaseDispatcher):
         self._channel.close()
 
 
-def Dispatcher(*args, **kwargs):
+def Dispatcher(*args, **kwargs) -> BaseDispatcher:
     dispatchers = {'redis': RedisDispatcher, 'local': LocalDispatcher, 'rabbitmq': RabbitDispatcher}
     return dispatchers[settings.dispatcher_type](*args, **kwargs)

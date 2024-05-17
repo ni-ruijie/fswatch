@@ -7,6 +7,9 @@ from loguru import logger
 from datetime import datetime
 
 
+__all__ = ['ExtendedInotifyConstants', 'InotifyEvent', 'ExtendedEvent']
+
+
 class ExtendedInotifyConstants(InotifyConstants):
     EX_META = 0x100000000
     EX_RENAME = 0x200000000
