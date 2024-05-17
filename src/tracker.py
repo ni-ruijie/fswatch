@@ -104,6 +104,36 @@ class BaseFile(BaseRecord):
         pass
 
 
+def _dict_diff(sec1: dict, sec2: dict) -> dict:
+    mod = {'add': {}, 'del': {}, 'mod': {}}
+    k1, k2 = set(sec1.keys()), set(sec2.keys())
+    add_keys = k2 - k1
+    del_keys = k1 - k2
+    com_keys = k1 & k2
+    for k in add_keys:
+        mod['add'][k] = sec2[k]
+    for k in del_keys:
+        mod['del'][k] = sec1[k]
+    for k in com_keys:
+        if sec1[k] != sec2[k]:
+            mod['mod'][k] = (sec1[k], sec2[k])
+    if mod['add'] or mod['del'] or mod['mod']:
+        return mod
+    return {}
+
+
+def _dict_reset(sec1: dict, sec2: dict, secd: dict):
+    for k in set(sec2.keys()) | set(secd['del'].keys()):
+        if k in secd['add']:
+            pass
+        elif k in secd['del']:
+            sec1[k] = secd['del'][k]
+        elif k in secd['mod']:
+            sec1[k] = secd['mod'][k][0]
+        else:
+            sec1[k] = sec2[k]
+
+
 class IniFile(BaseFile):
     format = 'INI'
 
@@ -125,7 +155,7 @@ class IniFile(BaseFile):
     @staticmethod
     def _diff(cfg1: dict, cfg2: dict) -> dict:
         # TODO: (Optional) Track file renaming and section renaming
-        diff = {'add': {}, 'del': {}, 'mod': {}, 'info': {}}
+        diff = {'add': {}, 'del': {}, 'mod': {}}
         # Compare section names
         s1, s2 = set(cfg1.keys()), set(cfg2.keys())
         add_secs = s2 - s1
@@ -137,22 +167,11 @@ class IniFile(BaseFile):
             diff['del'][s] = cfg1[s]
         # Compare each section
         for s in com_secs:
-            mod = {'add': {}, 'del': {}, 'mod': {}}
             sec1, sec2 = cfg1[s], cfg2[s]
-            k1, k2 = set(sec1.keys()), set(sec2.keys())
-            add_keys = k2 - k1
-            del_keys = k1 - k2
-            com_keys = k1 & k2
-            for k in add_keys:
-                mod['add'][k] = sec2[k]
-            for k in del_keys:
-                mod['del'][k] = sec1[k]
-            for k in com_keys:
-                if sec1[k] != sec2[k]:
-                    mod['mod'][k] = (sec1[k], sec2[k])
-            if mod['add'] or mod['del'] or mod['mod']:
+            mod = _dict_diff(sec1, sec2)
+            if mod:
                 diff['mod'][s] = mod
-        if diff['add'] or diff['del'] or diff['mod'] or diff['info']:
+        if diff['add'] or diff['del'] or diff['mod']:
             return diff
         return {}
 
@@ -167,18 +186,32 @@ class IniFile(BaseFile):
             elif s in diff['mod']:
                 ret[s] = {}
                 sec1, sec2, secd = ret[s], cfg[s], diff['mod'][s]
-                for k in set(sec2.keys()) | set(secd['del'].keys()):
-                    if k in secd['add']:
-                        pass
-                    elif k in secd['del']:
-                        sec1[k] = secd['del'][k]
-                    elif k in secd['mod']:
-                        sec1[k] = secd['mod'][k][0]
-                    else:
-                        sec1[k] = sec2[k]
+                _dict_reset(sec1, sec2, secd)
             else:
                 ret[s] = cfg[s]
         return ret
+
+
+class JsonFile(BaseFile):
+    format = 'JSON'
+    
+    @staticmethod
+    def _read(path: str) -> dict:
+        try:
+            return utils.load_json(path)
+        except Exception as e:
+            logger.error(e)
+            return {}
+
+    @staticmethod
+    def _diff(cfg1: dict, cfg2: dict) -> Dict[str, List[Tuple[int, str]]]:
+        return _dict_diff(cfg1, cfg2)
+
+    @staticmethod
+    def _reset(cfg: dict, diff: dict) -> dict:
+        cfg1 = {}
+        _dict_reset(cfg1, cfg, diff)
+        return cfg1
 
 
 class GenericFile(BaseFile):
@@ -259,7 +292,7 @@ class GenericFile(BaseFile):
 
 FileT = TypeVar('FileT', bound=BaseFile)
 _ABBR_LEN = 3
-_file_cls = (IniFile, GenericFile)
+_file_cls = (IniFile, JsonFile, GenericFile)
 _name_to_type: Dict[str, BaseFile] = {
     **{t.format: t for t in _file_cls},
     **{t.format[:_ABBR_LEN]: t for t in _file_cls if len(t.format) > _ABBR_LEN}
@@ -466,6 +499,16 @@ def _test_generic():
     diff = a.diff(b)
     print(diff)
     print(b.reset(diff))
+    
+
+def _test_json():
+    a = JsonFile.from_file('configs/example1.json')
+    print(a)
+    b = JsonFile.from_file('configs/example2.json')
+    print(b)
+    diff = a.diff(b)
+    print(diff)
+    print(b.reset(diff))
 
 
 def _test_tracker():
@@ -587,3 +630,5 @@ if __name__ == '__main__':
             _test_tracker()
     elif sys.argv[1] == 'generic':
         _test_generic()
+    elif sys.argv[1] == 'json':
+        _test_json()
