@@ -10,7 +10,7 @@
 import argparse
 import os
 import os.path as osp
-from time import time
+from datetime import datetime
 from threading import Thread, Lock, Event
 import sys
 from typing import Callable, Final
@@ -48,7 +48,7 @@ class Shell(Thread):
         self._stopped_event.set()
 
 
-class MonitorController:
+class MasterController:
     OVERFlOW: Final = 'n_overflows'
     READ: Final = 'n_reads'
     EVENT: Final = 'n_events'
@@ -65,9 +65,16 @@ class MonitorController:
             self.EVENT: SlidingAverageMeter(duration)
         }
         self._check_scheduler = IntervalScheduler(
-            self._warn_limits, duration, max_interval=duration*24)
+            self._warn_limits,
+            settings.controller_basic_interval,
+            max_interval=settings.controller_max_interval
+        )
         self._stats_scheduler = IntervalScheduler(
-            self._notify_stats, duration, duration//6, duration*24, stats=self._stats.values())
+            self._notify_stats,
+            settings.controller_basic_interval,
+            max_interval=settings.controller_max_interval,
+            stats=self._stats.values()
+        )
         self._schedulers = {
             'check': self._check_scheduler,
             'stats': self._stats_scheduler
@@ -76,13 +83,15 @@ class MonitorController:
         self._thresholds = {}
 
         self._lock = Lock()
+        self._stopped_event = Event()
 
         self._workers = []
 
+        self._shell = Shell(self.parse_cmd)
+
+    def start(self):
         for scheduler in self._schedulers.values():
             scheduler.start()
-
-        self._shell = Shell(self.parse_cmd)
         self._shell.start()
 
     def parse_cmd(self, cmd: str) -> None:
@@ -141,16 +150,16 @@ class MonitorController:
             with open(osp.join('/proc/sys/fs/inotify', field), 'r') as fi:
                 fields[field] = int(fi.read())
 
-        procs = MonitorController.get_inotify_procs()
+        procs = MasterController.get_inotify_procs()
         fields['total_instances'] = sum(len(watches) for watches in procs.values())
-        fields['total_watches'] = sum(procs.get(str(os.getpid()), []))
+        fields['total_watches'] = sum(sum(watches) for watches in procs.values())
 
         return fields
     
     def _emit(self, msg: str, **kwargs) -> None:
         for route in (ExtendedEvent(ExtendedInotifyConstants.EX_META).
                     select_routes(self._dispatcher.routes)):
-            self._dispatcher.emit(route, msg=msg, **kwargs)
+            self._dispatcher.emit(route, msg_time=datetime.now(), msg=msg, **kwargs)
     
     def signal_inotify_stats(self, name: str, num: int = 1) -> None:
         Thread(target=self._signal_inotify_stats, args=(name, num)).start()
@@ -166,9 +175,11 @@ class MonitorController:
                     msg_zh=
                     '发生事件队列溢出'
                 )
-                self._warned_overflow = True  # TODO: unset this flag sometime later
+                self._warned_overflow = True  # only warn the first one of consecutive overflows
 
     def _warn_limits(self) -> float:
+        priority = 5  # if no messages, increase checking frequency
+
         info = self.get_inotify_info()
         instance_used = info['total_instances'] / info['max_user_instances']
         watch_used = info['total_watches'] / info['max_user_watches']
@@ -184,8 +195,19 @@ class MonitorController:
                 f'已用 watch 数: {info["total_watches"]} / {info["max_user_watches"]} '
                 f'({watch_used*100:.2f}%)'
             )
-            return -1  # lower the priority since we have already sent messages
-        return 1
+            priority = -1  # lower the priority since we have already sent messages
+
+        n_workers = len(self._workers)
+        n_inactive_workers = len([worker for worker in self._workers if not worker.is_alive()])
+        if n_inactive_workers:
+            self._emit(
+                f'Workers down: {n_inactive_workers} / {n_workers}',
+                msg_zh=
+                f'Worker 崩溃: {n_inactive_workers} / {n_workers}'
+            )
+            priority = -1
+
+        return priority
         
     def _notify_stats(self) -> float:
         sums = {stat: (self._stats[stat].get_prev()['sum'],
@@ -204,6 +226,9 @@ class MonitorController:
                 f'读出事件 {sums[self.EVENT][1]} 个, '
                 f'发生溢出 {sums[self.OVERFlOW][1]} 次'
             )
+        else:
+            # We may warn overflow again later as we have not seen it for it while
+            self._warned_overflow = False
         if ope > prev_ope:
             return 1  # the more overflow events, the higher priority
         else:
@@ -213,6 +238,10 @@ class MonitorController:
         self._workers.append(worker)
     
     def close(self) -> None:
+        if self._stopped_event.is_set():
+            return
+        self._stopped_event.set()
+
         for worker in self._workers:
             worker.stop()
         for scheduler in self._schedulers.values():

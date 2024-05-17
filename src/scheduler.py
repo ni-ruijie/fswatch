@@ -108,7 +108,7 @@ class IntervalScheduler(BaseScheduler):
     Parameters
     ----------
     callback: function
-        Called every interval. Returns a priority value ranged from [-1, 1].
+        Called every interval. Returns a priority value ranged.
         A negative priority increase the interval while a positive one does
         the opposite.
 
@@ -143,10 +143,7 @@ class IntervalScheduler(BaseScheduler):
                 self._cur_time = time()
                 priority = self._callback()
                 _prev_interval = self._interval
-                if priority < 0:
-                    self.increase()
-                elif priority > 0:
-                    self.decrease()
+                self.scale_interval(2**(-priority))
                 if self._interval != _prev_interval:
                     logger.debug(f'{self} Interval {_prev_interval} -> {self._interval}')
 
@@ -165,13 +162,9 @@ class IntervalScheduler(BaseScheduler):
         for stat in self._stats:
             stat.reset_duration(self._interval)
 
-    def increase(self) -> int:
-        self._interval = min(self._max_interval, self._interval * 2)
-        self._update_stats()
-        return self._interval
-
-    def decrease(self) -> int:
-        self._interval = max(self._min_interval, self._interval // 2)
+    def scale_interval(self, scale: float) -> int:
+        self._interval = min(self._max_interval, max(self._min_interval,
+            int(self._interval * scale)))
         self._update_stats()
         return self._interval
 

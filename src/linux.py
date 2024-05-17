@@ -69,7 +69,7 @@ class inotify_event_struct(ctypes.Structure):
 
 # Defined in libc
 
-libc = ctypes.CDLL(ctypes.util.find_library('c'))
+libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
 
 inotify_init = libc.inotify_init
 inotify_add_watch = libc.inotify_add_watch

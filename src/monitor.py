@@ -13,7 +13,7 @@ from database.conn import SQLEventLogger
 from linux import *
 from tracker import FileTracker
 from dispatcher import BaseDispatcher, Dispatcher, Route
-from controller import MonitorController
+from controller import MasterController
 from event import *
 from buffer import InotifyBuffer
 import settings
@@ -26,13 +26,12 @@ DEFAULT_EVENT_BUFFER_SIZE = DEFAULT_NUM_EVENTS * (EVENT_SIZE + 16)
 
 class Worker(threading.Thread):
     def __init__(self, paths: List[str], channel: BaseDispatcher,
-                 controller: MonitorController, watch_link: bool = True,
+                 controller: MasterController, watch_link: bool = True,
                  mask: int = InotifyConstants.IN_ALL_EVENTS):
         super().__init__()
         self._stopped_event = threading.Event()
         self._channel = channel
         self._controller = controller
-        self._controller.add_worker(self)
 
         self._lock = threading.Lock()
         self._fd = inotify_init()
@@ -50,13 +49,15 @@ class Worker(threading.Thread):
         self._buffer = InotifyBuffer(self._read_events)
         self._callback_queue = Queue()
 
+        self._init_paths = paths
         logger.debug(f'Worker {self}: Watching {paths} using Inotify instance {self._fd}')
         for path in paths:
-            self._add_dir_watch(os.fsencode(path))
+            self._add_dir_watch(os.fsencode(path), self._mask)
 
     def start(self):
         self._buffer.start()
         super().start()
+        self._controller.add_worker(self)
         self._db_logger.start()
 
     @staticmethod
@@ -91,6 +92,7 @@ class Worker(threading.Thread):
                 # NOTE: Overflow can be triggered by list(os.walk(link_loop, followlinks=True))
                 logger.critical('Queue overflow occurred')
                 event_list.append(InotifyEvent(wd, mask, cookie, name, b''))
+                # TODO: Do _add_dir_watch after overflow since IN_ISDIR|IN_CREATE events may be dropped
                 continue
             if mask & InotifyConstants.IN_IGNORED:
                 # logger.warning('Event ignored')
@@ -123,7 +125,7 @@ class Worker(threading.Thread):
                 #       the file is created again, it is regarded as the previous one.
             
             if event.is_create_dir:
-                self._add_dir_watch(src_path)
+                self._add_dir_watch(src_path, self._mask)
             
             elif event.is_delete_dir:
                 self._rm_watch(wd)
@@ -131,7 +133,7 @@ class Worker(threading.Thread):
         self._controller.signal_inotify_stats(self._controller.EVENT, len(event_list))
         return event_list
     
-    def _add_link_watch(self, src_path, mask=InotifyConstants.IN_ALL_EVENTS):
+    def _add_link_watch(self, src_path, mask):
         """
         Note
         ----
@@ -175,7 +177,7 @@ class Worker(threading.Thread):
             self._rm_dir_watch(self._wd_for_path[path])
         logger.debug(f'links: {self._links_for_path}')
     
-    def _add_dir_watch(self, path, mask=InotifyConstants.IN_ALL_EVENTS):
+    def _add_dir_watch(self, path, mask):
         if not osp.isdir(path):
             raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), path)
         self._add_watch(path, mask)
@@ -207,10 +209,13 @@ class Worker(threading.Thread):
                     self._rm_watch(self._wd_for_path[full_path])
                 # TODO: Remove links in the dir
         
-    def _add_watch(self, path, mask=InotifyConstants.IN_ALL_EVENTS):
+    def _add_watch(self, path, mask):
         # int inotify_add_watch(int fd, const char *pathname, uint32_t mask);
         wd = inotify_add_watch(self._fd, path, mask)
-        assert wd != -1
+        if wd == -1:
+            raise SystemError(
+                f'inotify_add_watch failed with errno {errno.errorcode[ctypes.get_errno()]} '
+                '(check https://www.man7.org/linux/man-pages/man2/inotify_add_watch.2.html#ERRORS for details)')
         self._wd_for_path[path] = wd
         self._path_for_wd[wd] = path
         logger.debug(f'wd: {self._path_for_wd}')
@@ -243,11 +248,20 @@ class Worker(threading.Thread):
         self._stopped_event.set()
         self._buffer.stop()
 
+    @property
+    def is_crashed(self):
+        return not self.is_alive() and not self._stopped_event.set()
+
+    def __str__(self):
+        return f'<{self.__class__.__name__}(Thread-{self.native_id}, {self._init_paths})>'
+
 
 def main(args):
     logger.info(f'Monitor pid {os.getpid()}')
 
-    dispatcher = Dispatcher()
+    # ===  Init  ===
+
+    dispatcher = Dispatcher(name=args.name)
     mask = InotifyConstants.IN_CREATE | InotifyConstants.IN_DELETE_SELF | InotifyConstants.IN_MODIFY
     for route in dispatcher.routes:
         mask |= route.event & ~ExtendedInotifyConstants.EX_ALL_EX_EVENTS
@@ -259,7 +273,7 @@ def main(args):
     for path in args.paths:
         tracker.watch_dir(path)
 
-    controller = MonitorController(dispatcher, tracker)
+    controller = MasterController(dispatcher, tracker)
 
     workers = []
     if settings.worker_every_path:
@@ -268,11 +282,20 @@ def main(args):
     else:
         workers = [Worker(args.paths, dispatcher, controller, mask=mask)]
     
+    # ===  Start threads  ===
+    
+    dispatcher.start()
     for worker in workers:
         worker.start()
+    controller.start()
 
+    # ===  Join threads  ===
+
+    # controller.close()  # NOTE: wait for controller closing itself
     for worker in workers:
         worker.join()
+    if any(worker.is_crashed for worker in workers):
+        return  # we may want to send alert about crashed workers, so keep dispatcher running
     dispatcher.close()
 
 
@@ -282,6 +305,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('paths', type=str, nargs='+')
+    parser.add_argument('--name', type=str, default=None)
     args = overwrite_settings(parser)
 
     main(args)

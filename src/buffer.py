@@ -85,6 +85,8 @@ class InotifyBuffer(Thread):
         self._stopped_event = Event()
 
     def read_event(self) -> InotifyEvent:
+        if not self.is_alive():
+            raise BufferError('Attemping to read buffer from an inactive thread')
         return self._queue.get()
 
     def run(self) -> None:

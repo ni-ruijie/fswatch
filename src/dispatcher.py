@@ -57,12 +57,19 @@ class Route:
 
 
 class BaseDispatcher:
-    def __init__(self) -> None:
+    def __init__(self, name: str = None) -> None:
         self.routes = list(Route.parse_routes(self._emit))
+        self._pid = os.getpid()
+        self._name = name
+
+    def start(self) -> None:
         for route in self.routes:
             route.scheduler.start()
     
     def emit(self, route: Route, **data) -> None:
+        data['monitor_pid'] = self._pid
+        data['monitor_name'] = self._name
+        data['route_tag'] = route.tag
         route.scheduler.put(data)
     
     def _emit(self, route: Route, data: dict) -> None:
@@ -74,9 +81,9 @@ class BaseDispatcher:
 
 
 class RedisDispatcher(BaseDispatcher):
-    def __init__(self) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         global notify_redis_store
-        super().__init__()
+        super().__init__(*args, **kwargs)
         import sys
         for lib in settings.external_libs:
             sys.path.append(lib)
@@ -96,8 +103,8 @@ class RedisDispatcher(BaseDispatcher):
 
 
 class LocalDispatcher(BaseDispatcher):
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
         self._lock = Lock()
         self._fs = {}
         for tag in settings.route_tags:
@@ -117,7 +124,7 @@ class LocalDispatcher(BaseDispatcher):
 
 class RabbitDispatcher(BaseDispatcher):
     def __init__(self, *args, **kwargs) -> None:
-        super().__init__()
+        super().__init__(*args, **kwargs)
         import pika
         self._connection = pika.BlockingConnection(
             pika.ConnectionParameters(host='localhost', heartbeat=0))
