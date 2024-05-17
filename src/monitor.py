@@ -257,8 +257,6 @@ class Worker(threading.Thread):
 
 
 def main(args):
-    logger.info(f'Monitor pid {os.getpid()}')
-
     # ===  Init  ===
 
     dispatcher = Dispatcher(name=args.name)
@@ -288,6 +286,7 @@ def main(args):
     for worker in workers:
         worker.start()
     controller.start()
+    logger.success(f'Monitor {args.name or ""}(pid {os.getpid()}) is running.')
 
     # ===  Join threads  ===
 

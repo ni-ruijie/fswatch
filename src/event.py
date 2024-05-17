@@ -14,8 +14,9 @@ class ExtendedInotifyConstants(InotifyConstants):
     EX_META = 0x100000000
     EX_RENAME = 0x200000000
     EX_BEGIN_MODIFY = 0x400000000
-    EX_END_MODIFY = 0x800000000
-    EX_MODIFY_CONFIG = 0x1000000000
+    EX_IN_MODIFY = 0x800000000
+    EX_END_MODIFY = 0x1000000000
+    EX_MODIFY_CONFIG = 0x2000000000
     EX_ALL_EX_EVENTS = 0xff00000000
 
 
@@ -64,7 +65,7 @@ class LinuxProcess:
 
 
 class InotifyEvent:
-    def __init__(self, wd, mask, cookie, name, src_path, dest_path = None, event_time: float = None) -> None:
+    def __init__(self, wd, mask, cookie, name, src_path, dest_path = None, event_time: float = None, override: int = 0) -> None:
         self._wd = wd
         self._mask = mask
         self._cookie = cookie
@@ -73,22 +74,25 @@ class InotifyEvent:
         self._dest_path = dest_path
         self._time = time() if event_time is None else event_time
         self._proc = None
+        self._override = override
 
         self.lsb = self._mask & -self._mask
+        self._significant_bit = self.lsb
         self._event_name = None
 
         self._fields = {}
 
     @classmethod
-    def from_other(cls, other: 'InotifyEvent', mask=None, dest_path=None):
+    def from_other(cls, other: 'InotifyEvent', mask=0, dest_path=None, override=False):
         return InotifyEvent(
             other._wd,
-            other._mask if mask is None else other._mask | mask,
+            other._mask if override else other._mask | mask,
             other._cookie,
             other._name,
             other._src_path,
             dest_path=dest_path,
-            event_time=other._time
+            event_time=other._time,
+            override=other._mask if override else 0
         )
 
     def select_routes(self, routes: Iterable) -> Iterator:
@@ -165,7 +169,7 @@ class InotifyEvent:
     
     @property
     def event_name_zh(self):
-        return _tr_zh.get(self.lsb, self.event_name)
+        return _tr_zh.get(self._significant_bit, self.event_name)
     
     def add_field(self, **kwargs):
         self._fields = {**self._fields, **kwargs}
@@ -191,21 +195,22 @@ class InotifyEvent:
 
 class ExtendedEvent(InotifyEvent):
     def __init__(self, mask: int, src_path: bytes = b'', dest_path: bytes = None,
-                 event_time: float = None) -> None:
+                 event_time: float = None, override: int = 0) -> None:
         super().__init__(None, mask, None, None,
-                         src_path=src_path, dest_path=dest_path, event_time=event_time)
-        self.override = None  # TODO: This extended event may contain and override sub-events
+                         src_path=src_path, dest_path=dest_path, event_time=event_time, override=override)
         high = self._mask & ExtendedInotifyConstants.EX_ALL_EX_EVENTS
-        self.lsb = (high & -high) or (self._mask & -self._mask)
+        self._significant_bit = (high & -high) or self.lsb
 
     @classmethod
-    def from_other(cls, other: 'InotifyEvent', mask=None, dest_path=None):
-        return ExtendedEvent(
-            other._mask if mask is None else other._mask | mask,
+    def from_other(cls, other: 'InotifyEvent', mask=0, dest_path=None, override=False):
+        ret = ExtendedEvent(
+            other._mask if override else other._mask | mask,
             other._src_path,
             dest_path=dest_path,
-            event_time=other._time
+            event_time=other._time,
+            override=other._mask if override else 0
         )
+        return ret
 
     @property
     def event_name(self):
