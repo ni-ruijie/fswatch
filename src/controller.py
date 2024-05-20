@@ -7,7 +7,7 @@
 # NOTE: inotify limits can be reassigned by
 #       `sysctl fs.inotify.max_user_watches=65536`
 
-import argparse
+import click
 import os
 import os.path as osp
 from datetime import datetime
@@ -88,33 +88,62 @@ class MasterController:
         self._workers = []
 
         self._shell = Shell(self.parse_cmd)
+        for cmd in self._cmd_exit, self._cmd_checkout, self._cmd_list, self._cmd_stop:
+            self._cli.add_command(cmd)
+
+    @click.group()
+    @click.pass_context
+    def _cli(self):
+        pass
+
+    @click.command('exit')
+    @click.pass_context
+    def _cmd_exit(self):
+        self = self.obj
+        logger.info('Exiting')
+        self.close()
+        
+    @click.command('checkout')
+    @click.argument('path')
+    @click.argument('version', type=int)
+    @click.pass_context
+    def _cmd_checkout(self, path, version):
+        self = self.obj
+        logger.success(self._tracker.checkout_file(path, version))
+
+    @click.command('list')
+    @click.argument('var')
+    @click.pass_context
+    def _cmd_list(self, var):
+        self = self.obj
+        if var == 'tracker':
+            logger.success(list(self._tracker))
+        elif var == 'worker':
+            logger.success({worker.native_id: worker._path_for_wd for worker in self._workers
+                            if worker.native_id is not None})
+            
+    @click.command('stop')
+    @click.argument('pid', type=int)
+    @click.pass_context
+    def _cmd_stop(self, pid):
+        self = self.obj
+        pid = int(pid)
+        for worker in self._workers:
+            if worker.native_id == pid:
+                worker.stop()
+                self._workers.remove(worker)
+                logger.success(f'{worker} stopped.')
+                break
+        else:
+            logger.error('Worker not found')
+
+    def parse_cmd(self, cmd: str) -> None:
+        self._cli.invoke(self._cli.make_context('controller', cmd.split(), obj=self))
 
     def start(self):
         for scheduler in self._schedulers.values():
             scheduler.start()
         self._shell.start()
-
-    def parse_cmd(self, cmd: str) -> None:
-        name = cmd.split()[0]
-        if name == 'exit':
-            logger.info('Exiting')
-            self.close()
-        elif name == 'checkout':
-            parser = argparse.ArgumentParser('checkout')
-            parser.add_argument('path', type=str)
-            parser.add_argument('version', type=int)
-            args = parser.parse_args(cmd.split()[1:])
-            logger.success(self._tracker.checkout_file(args.path, args.version))
-        elif name == 'list':
-            parser = argparse.ArgumentParser('list')
-            parser.add_argument('var', type=str)
-            args = parser.parse_args(cmd.split()[1:])
-            if args.var == 'tracker':
-                logger.success(list(self._tracker))
-            elif args.var == 'worker':
-                logger.success([worker._path_for_wd for worker in self._workers])
-        else:
-            logger.error(f'Command not recognized: {cmd}')
 
     @staticmethod
     def get_inotify_procs() -> dict:
