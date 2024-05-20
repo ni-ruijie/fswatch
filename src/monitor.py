@@ -92,13 +92,21 @@ class Worker(threading.Thread):
                 # NOTE: Overflow can be triggered by list(os.walk(link_loop, followlinks=True))
                 logger.critical('Queue overflow occurred')
                 event_list.append(InotifyEvent(wd, mask, cookie, name, b''))
-                # TODO: Do _add_dir_watch after overflow since IN_ISDIR|IN_CREATE events may be dropped
+                # Do _add_dir_watch after overflow since IN_ISDIR|IN_CREATE events may be dropped
+                # XXX: Better in separated thread to prevent another overflow?
+                self._clean_watch()
+                for path in self._init_paths:
+                    path = os.fsencode(path)
+                    self._add_dir_watch(path, self._mask)
+                logger.success(f'Auto-recover watches after overflow.')
                 continue
             if mask & InotifyConstants.IN_IGNORED:
                 # logger.warning('Event ignored')
                 event_list.append(InotifyEvent(wd, mask, cookie, name, b''))
                 continue
 
+            if not wd in self._path_for_wd:
+                continue  # AUTO_RECOVERY: wd may have been removed
             wd_path = self._path_for_wd[wd]
             src_path = osp.join(wd_path, name) if name else wd_path  # avoid trailing slash
             event = InotifyEvent(wd, mask, cookie, name, src_path)
@@ -196,10 +204,18 @@ class Worker(threading.Thread):
             for dirname in dirnames:
                 full_path = osp.join(root, dirname)
                 if not osp.islink(full_path):
+                    if not full_path in self._wd_for_path:
+                        continue  # AUTO_RECOVERY:
                     self._rm_watch(self._wd_for_path[full_path])
                 # TODO: Remove links in the dir
+
+    def _clean_watch(self):
+        for wd in list(self._path_for_wd):
+            self._rm_watch(wd)
         
     def _add_watch(self, path, mask):
+        if path in self._wd_for_path:
+            return  # AUTO_RECOVERY:
         # int inotify_add_watch(int fd, const char *pathname, uint32_t mask);
         wd = inotify_add_watch(self._fd, path, mask)
         if wd == -1:
@@ -212,14 +228,14 @@ class Worker(threading.Thread):
                 '(check https://www.man7.org/linux/man-pages/man2/inotify_add_watch.2.html#ERRORS for details)')
         self._wd_for_path[path] = wd
         self._path_for_wd[wd] = path
-        logger.debug(f'wd: {self._path_for_wd}')
+        # logger.debug(f'wd: {self._path_for_wd}')
 
     def _rm_watch(self, wd):
         inotify_rm_watch(self._fd, wd)
         path = self._path_for_wd[wd]
         del self._wd_for_path[path]
         del self._path_for_wd[wd]
-        logger.debug(f'wd: {self._path_for_wd}')
+        # logger.debug(f'wd: {self._path_for_wd}')
 
     def _queue_for_emit(self, event):
         self._callback_queue.put(event)

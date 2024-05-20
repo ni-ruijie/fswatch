@@ -37,7 +37,7 @@ class Shell(Thread):
                     try:
                         self._callback(cmd)
                     except Exception as e:
-                        logger.error(e)
+                        logger.error(repr(e))
 
     def query(self, prompt: str) -> str:
         with self._lock:
@@ -104,7 +104,7 @@ class MasterController:
         self.close()
         
     @click.command('checkout')
-    @click.argument('path')
+    @click.argument('path', type=click.Path(True))
     @click.argument('version', type=int)
     @click.pass_context
     def _cmd_checkout(self, path, version):
@@ -112,7 +112,7 @@ class MasterController:
         logger.success(self._tracker.checkout_file(path, version))
 
     @click.command('list')
-    @click.argument('var')
+    @click.argument('var', type=click.Choice(['tracker', 'worker']))
     @click.pass_context
     def _cmd_list(self, var):
         self = self.obj
@@ -127,7 +127,6 @@ class MasterController:
     @click.pass_context
     def _cmd_stop(self, pid):
         self = self.obj
-        pid = int(pid)
         for worker in self._workers:
             if worker.native_id == pid:
                 worker.stop()
