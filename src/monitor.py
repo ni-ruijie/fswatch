@@ -104,25 +104,13 @@ class Worker(threading.Thread):
             event = InotifyEvent(wd, mask, cookie, name, src_path)
             event_list.append(event)
 
-            src_path_d = os.fsdecode(src_path)
-            if event.is_create_file:
-                if osp.islink(src_path):
-                    self._add_link_watch(src_path, self._mask)
-                elif osp.isfile(src_path):
-                    self._controller._tracker.watch_or_compare(src_path_d, self._queue_for_emit)
-            elif event.is_modify_file:
-                if osp.islink(src_path):  # e.g., ln -sfn
-                    self._rm_link_watch(src_path)
-                    self._add_link_watch(src_path, self._mask)
-                elif osp.isfile(src_path):
-                    # event.select_procs()
-                    # logger.success(event._proc)
-                    self._controller._tracker.watch_or_compare(src_path_d, self._queue_for_emit)
-            elif event.is_delete_file:
-                if src_path in self._path_for_link:
-                    self._rm_link_watch(src_path)
-                # NOTE: We do not record the deletion of a tracked file, and when
-                #       the file is created again, it is regarded as the previous one.
+            if event.is_create_link:
+                self._add_link_watch(src_path, self._mask)
+            elif event.is_modify_link:  # e.g., ln -sfn
+                self._rm_link_watch(src_path)
+                self._add_link_watch(src_path, self._mask)
+            elif event.is_delete_file and src_path in self._path_for_link:
+                self._rm_link_watch(src_path)
             
             if event.is_create_dir:
                 self._add_dir_watch(src_path, self._mask)
@@ -138,7 +126,7 @@ class Worker(threading.Thread):
         Note
         ----
         If a symbolic link is created before the target,
-        the link is ignored and the target will not be watched.
+        the dangling link is ignored and the target will not be watched.
         For example,
         ```
         ln -s bb a
@@ -179,7 +167,9 @@ class Worker(threading.Thread):
     
     def _add_dir_watch(self, path, mask):
         if not osp.isdir(path):
-            raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), path)
+            logger.warning(f'{path} is not a directory')
+            # raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), path)
+            return
         self._add_watch(path, mask)
 
         for root, dirnames, _ in os.walk(path):
@@ -213,8 +203,12 @@ class Worker(threading.Thread):
         # int inotify_add_watch(int fd, const char *pathname, uint32_t mask);
         wd = inotify_add_watch(self._fd, path, mask)
         if wd == -1:
+            err = ctypes.get_errno()
+            if err == errno.ENOENT:
+                logger.warning(f'{path} does not exist')
+                return
             raise SystemError(
-                f'inotify_add_watch failed with errno {errno.errorcode[ctypes.get_errno()]} '
+                f'inotify_add_watch failed with errno {errno.errorcode[err]} '
                 '(check https://www.man7.org/linux/man-pages/man2/inotify_add_watch.2.html#ERRORS for details)')
         self._wd_for_path[path] = wd
         self._path_for_wd[wd] = path
@@ -242,6 +236,13 @@ class Worker(threading.Thread):
                 if event is not None:
                     self._emit(event)
                     self._db_logger.log_event(event)
+
+                    if event.is_create_file:
+                        self._controller._tracker.watch_or_compare(event.src_path, self._queue_for_emit)
+                    if event.is_modify_file:
+                        self._controller._tracker.watch_or_compare(event.src_path, self._queue_for_emit)
+                    # NOTE: We do not record the deletion of a tracked file, and when
+                    #       the file is created again, it is regarded as the previous one.
 
     def stop(self):
         self._db_logger.stop()

@@ -1,4 +1,5 @@
 import os
+import os.path as osp
 import re
 from typing import Iterable, List, Tuple, Iterator
 from time import time
@@ -25,6 +26,9 @@ _tr_zh = {
     ExtendedInotifyConstants.IN_OPEN: '打开',
     ExtendedInotifyConstants.IN_ACCESS: '读取',
     ExtendedInotifyConstants.IN_MODIFY: '写入',
+    ExtendedInotifyConstants.EX_BEGIN_MODIFY: '开始写入',
+    ExtendedInotifyConstants.EX_IN_MODIFY: '正在写入',
+    ExtendedInotifyConstants.EX_END_MODIFY: '结束写入',
     ExtendedInotifyConstants.IN_DELETE: '删除',
     ExtendedInotifyConstants.EX_RENAME: '重命名',
     ExtendedInotifyConstants.EX_MODIFY_CONFIG: '修改配置'
@@ -106,23 +110,54 @@ class InotifyEvent:
         self._proc = list(LinuxProcess.get_procs_by_filename(os.fsdecode(self._src_path)))
 
     @property
+    def src_path(self):
+        return os.fsdecode(self._src_path)
+
+    @property
+    def dest_path(self):
+        return None if self._dest_path is None else os.fsdecode(self._dest_path)
+
+    @property
+    def is_invalid(self):
+        """If file has been deleted or changed since event."""
+        return (self._mask & (InotifyConstants.IN_DELETE | InotifyConstants.IN_DELETE_SELF | InotifyConstants.IN_MOVED_FROM) == 0
+                and not osp.exists(self._src_path) and self._dest_path is None) \
+            or (self._mask & InotifyConstants.IN_ISDIR > 0) ^ osp.isdir(self._src_path)
+
+    @property
     def is_dir(self):
         return self._mask & InotifyConstants.IN_ISDIR
     
     @property
     def is_create_file(self):
-        return ~(self._mask & InotifyConstants.IN_ISDIR) and \
+        return osp.isfile(self._src_path) and \
             self._mask & InotifyConstants.IN_CREATE
     
     @property
     def is_modify_file(self):
-        return ~(self._mask & InotifyConstants.IN_ISDIR) and \
+        return osp.isfile(self._src_path) and \
             self._mask & InotifyConstants.IN_MODIFY
     
     @property
+    def is_modify_file(self):
+        return osp.isfile(self._src_path) and \
+            self._mask & ExtendedInotifyConstants.EX_END_MODIFY
+    
+    @property
     def is_delete_file(self):
-        return ~(self._mask & InotifyConstants.IN_ISDIR) and \
+        """If is deletion of file or link."""
+        return self._mask & InotifyConstants.IN_ISDIR == 0 and \
             self._mask & InotifyConstants.IN_DELETE
+    
+    @property
+    def is_create_link(self):
+        return osp.islink(self._src_path) and \
+            self._mask & InotifyConstants.IN_CREATE
+    
+    @property
+    def is_modify_link(self):
+        return osp.islink(self._src_path) and \
+            self._mask & InotifyConstants.IN_MODIFY
     
     @property
     def is_create_dir(self):
@@ -131,7 +166,6 @@ class InotifyEvent:
     
     @property
     def is_delete_dir(self):
-        # mask = InotifyConstants.IN_ISDIR | InotifyConstants.IN_DELETE
         mask = InotifyConstants.IN_DELETE_SELF
         return self._mask & mask >= mask
     
@@ -150,8 +184,8 @@ class InotifyEvent:
                     'IN_ACCESS', 'IN_MODIFY', 'IN_ATTRIB', 'IN_CLOSE_WRITE',
                     'IN_CLOSE_NOWRITE','IN_OPEN', 'IN_MOVED_FROM', 'IN_MOVED_TO',
                     'IN_DELETE', 'IN_CREATE', 'IN_DELETE_SELF', 'IN_MOVE_SELF',
-                    'IN_UNMOUNT', 'IN_Q_OVERFLOW', 'IN_IGNORED', 'EX_RENAME'):
-                if self._mask & getattr(ExtendedInotifyConstants, event):
+                    'IN_UNMOUNT', 'IN_Q_OVERFLOW', 'IN_IGNORED'):
+                if self._mask & getattr(InotifyConstants, event):
                     self._event_name = event
                     break  # TODO: Is it possible to have multiple user-space events?
         return self._event_name
@@ -215,7 +249,9 @@ class ExtendedEvent(InotifyEvent):
     @property
     def event_name(self):
         if super().event_name is None:
-            for event in ('EX_RENAME', 'EX_MODIFY_CONFIG'):
+            for event in (
+                    'EX_RENAME', 'EX_MODIFY_CONFIG',
+                    'EX_BEGIN_MODIFY', 'EX_IN_MODIFY', 'EX_END_MODIFY'):
                 if self._mask & getattr(ExtendedInotifyConstants, event):
                     self._event_name = event
                     break

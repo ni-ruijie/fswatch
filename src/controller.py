@@ -100,13 +100,19 @@ class MasterController:
             logger.info('Exiting')
             self.close()
         elif name == 'checkout':
-            parser = argparse.ArgumentParser()
+            parser = argparse.ArgumentParser('checkout')
             parser.add_argument('path', type=str)
             parser.add_argument('version', type=int)
             args = parser.parse_args(cmd.split()[1:])
             logger.success(self._tracker.checkout_file(args.path, args.version))
-        elif name == 'list_tracked':
-            logger.success(list(self._tracker))
+        elif name == 'list':
+            parser = argparse.ArgumentParser('list')
+            parser.add_argument('var', type=str)
+            args = parser.parse_args(cmd.split()[1:])
+            if args.var == 'tracker':
+                logger.success(list(self._tracker))
+            elif args.var == 'worker':
+                logger.success([worker._path_for_wd for worker in self._workers])
         else:
             logger.error(f'Command not recognized: {cmd}')
 
