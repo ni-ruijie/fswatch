@@ -1,13 +1,14 @@
 class _T:
     """An option that contains multiple values"""
-    def __init__(self, data, dtype=None, nargs='*'):
+    def __init__(self, data, dtype=None, nargs='*', choices=None):
         self._data = data
         self.dtype = dtype or type(data[0])
         self.nargs = nargs
+        self.choices = choices
 
     @classmethod
-    def default(cls, *args, dtype=None, nargs='*'):
-        return cls(args, dtype=dtype, nargs=nargs)
+    def default(cls, *args, dtype=None, nargs='*', choices=None):
+        return cls(args, dtype=dtype, nargs=nargs, choices=choices)
     
     def __iter__(self):
         return iter(self._data)
@@ -22,12 +23,15 @@ class _T:
 worker_every_path = False  # if true, use one worker thread (along with an inotify instance) for each path
 worker_extra_mask = ''  # record additional inotify events to database, or only record route_events if not set
 worker_blocking_read = True  # blocking or non-blocking read from the inotify file descriptor
+# NOTE: blocking read blocks program from elegant exiting, while non-blocking read causes busy waiting
 
 # For file tracking
 tracker_cachedir = '.track'
 tracker_patterns = (r'.*\.(ini|INI)', r'.*\.py')  # M tracking re patterns
 tracker_filetypes = ('INI', 'GENERIC')  # M corresponding parser types
-tracker_indexer = 'sql'  # choices: csv, sql
+tracker_indexer = 'sql'  # how to store file versions, choices: csv, sql
+tracker_cachetype = 'sql'  # how to store file backups and diffs, choices: file (store under .track/), sql
+tracker_depth = -1
 
 # For message routing
 route_tags = ('logs', 'warnings', 'tracks')  # N destinations

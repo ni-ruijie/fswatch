@@ -3,7 +3,7 @@ import re
 import os
 import os.path as osp
 import configparser
-import csv
+import json
 import utils
 import warnings
 from typing import Dict, List, Tuple, TypeVar, Iterator
@@ -48,14 +48,17 @@ class BaseRecord:
     def from_backup(cls, path: str):
         return cls(utils.load_json(path), path)
     
-    def save(self, path: str) -> None:
-        utils.save_json(self._data, path)
+    def save(self, path: str, indexer: BaseIndexer = None) -> None:
+        if indexer is None:
+            utils.save_json(self._data, path)
+        else:
+            pass
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}({self._data})'
 
     def __str__(self) -> str:
-        return f'{self._data}'
+        return json.dumps(self._data)
 
 
 class FileDiff(BaseRecord):
@@ -73,7 +76,7 @@ class FileDiff(BaseRecord):
 class BaseFile(BaseRecord):
     format = 'BASE'
 
-    def __init__(self, data: dict, path: str) -> None:
+    def __init__(self, data: dict, path: str = None) -> None:
         super().__init__(data)
         self._path = path
 
@@ -321,38 +324,47 @@ class FileTracker:
     checkout_file
     """
     # TODO: (Optional) Optimize diff tree, e.g., 1 -> 2 -> 1 could be 2 <- 1 -> 1
-    def __init__(self, max_depth: int = -1) -> None:
-        self._dir = settings.tracker_cachedir
-        self._backup_dir = osp.join(self._dir, 'backup')
-        self._diff_dir = osp.join(self._dir, 'diff')
+    def __init__(self) -> None:
         self._patterns = settings.tracker_patterns
         self._filetypes: List[BaseFile] = [_name_to_type[name] for name in settings.tracker_filetypes]
-        self._max_depth = max_depth
+        self._max_depth = settings.tracker_depth
 
         # self._index = self._fid_for_path = self._nr_index = None
 
         self._lock = Lock()
 
-        _create_dir(self._dir)
-        _create_dir(self._backup_dir)
-        _create_dir(self._diff_dir)
-
         self._indexer = None  # manage the index of backup files and diff files
         self._enabled = True
         cols = ('fid', 'path', 'version', 'format')
+        self._cachetype = settings.tracker_cachetype
         if settings.tracker_indexer == 'csv':
             self._index_file = osp.join(self._dir, 'index.csv')
             _create_file(self._index_file)
             self._indexer = CSVIndexer(self._index_file, cols)
+            if self._cachetype != 'file':
+                logger.warning('tracker_index=csv is only compatible with tracker_cachetype=file')
+                self._enabled = False
         else:
             pool = SQLConnectionPool(8)
             pool.init_conn()
-            self._indexer = SQLIndexer('tracked_index', cols, pool)
+            if self._cachetype == 'file':
+                self._indexer = SQLIndexer('tracker_index', cols, pool)
+            else:
+                self._indexer = SQLJsonIndexer(
+                    'tracker_index', 'tracker_diff', cols, 'backup', 'diff', pool)
             if not pool.enabled:
                 logger.warning('Attempting to use SQL indexer but SQL is not enabled. '
                                'File tracker will be disabled.')
                 self._enabled = False
+                
         if self._enabled:
+            if self._cachetype == 'file':
+                self._dir = settings.tracker_cachedir
+                self._backup_dir = osp.join(self._dir, 'backup')
+                self._diff_dir = osp.join(self._dir, 'diff')
+                _create_dir(self._dir)
+                _create_dir(self._backup_dir)
+                _create_dir(self._diff_dir)
             logger.success(f'FileTracker: Using {self._indexer.__class__.__name__} as indexer.')
             
     def if_enabled(func):
@@ -373,29 +385,61 @@ class FileTracker:
         return self._indexer.select2(path)
 
     def _insert_index(self, path: str = None,
-                      version: int = 0, format: str = 'INI') -> int:
-        return self._indexer.insert(path=path, version=version, format=format[:_ABBR_LEN])
+                      version: int = 0, format: str = 'INI', backup: BaseFile = None) -> int:
+        if self._cachetype == 'file':
+            fid = self._indexer.insert(path=path, version=version, format=format[:_ABBR_LEN])
+            backup.save(self._get_head_path(fid))
+        else:
+            fid = self._indexer.insert(path=path, version=version, format=format[:_ABBR_LEN], backup=str(backup))
+        return fid
 
     def _update_index(self, fid: int, path: str = None,
-                      version_inc: int = 0) -> None:
-        self._indexer.update(fid, path=path,
-                             version=(None if version_inc == 0 else lambda x: x+version_inc))
+                      version_inc: int = 0, backup: BaseFile = None) -> int:
+        if self._cachetype == 'file':
+            ret = self._indexer.update(fid, path=path,
+                                version=(None if version_inc == 0 else lambda x: x+version_inc))
+            backup.save(self._get_head_path(fid))
+        else:
+            ret = self._indexer.update(fid, path=path,
+                                version=(None if version_inc == 0 else lambda x: x+version_inc), backup=str(backup))
+        return ret.get('version')
 
-    def _delete_index(self, fid: None) -> None:
+    def _delete_index(self, fid: int) -> None:
         # TODO
         raise NotImplementedError()
+    
+    def _load_backup(self, cls, fid: int) -> BaseFile:
+        if self._cachetype == 'file':
+            cfg = cls.from_backup(self._get_head_path(fid))
+        else:
+            dic, = self._indexer.select(fid, cols=('backup',))
+            cfg = cls(json.loads(dic))
+        return cfg
+            
+    def _insert_diff(self, fid: int, version: int, diff: FileDiff) -> None:
+        if self._cachetype == 'file':
+            diff.save(self._get_diff_path(fid, version))
+        else:
+            self._indexer.insert_diff(fid=fid, version=version, diff=str(diff))
 
-    @staticmethod
-    def _read_config(path: str) -> dict:
-        return IniFile._read(path)
+    def _delete_diff(self, fid: int, version: int) -> None:
+        if self._cachetype == 'file':
+            diff_file = self._get_diff_path(fid, version)
+            if osp.exists(diff_file):
+                os.remove(diff_file)
+        else:
+            self._indexer.delete_diff(fid=fid, version=version)
 
-    @staticmethod
-    def _diff_config(cfg1: dict, cfg2: dict) -> dict:
-        return IniFile._diff(cfg1, cfg2)
-        
-    @staticmethod
-    def _reset_config(cfg: dict, diff: dict) -> dict:
-        return IniFile._reset(cfg, diff)
+    def _load_diff(self, fid: int, version: int) -> FileDiff:
+        if self._cachetype == 'file':
+            diff = FileDiff.from_backup(self._get_diff_path(fid, version))
+        else:
+            ret = self._indexer.select_diff(fid=fid, version=version)
+            if ret is None:
+                raise FileNotFoundError(f'fid.version {fid}.{version} not found')
+            dic, = ret
+            diff = FileDiff(json.loads(dic))
+        return diff
     
     def _get_head_path(self, fid: int) -> str:
         return osp.join(self._backup_dir, f'{fid}.json')
@@ -453,24 +497,21 @@ class FileTracker:
     def _watch_file(self, cfg: BaseFile) -> None:
         """Start tracking a file."""
         path = cfg.path
-        fid = self._insert_index(path=path, format=cfg.format)
-        cfg.save(self._get_head_path(fid))
+        fid = self._insert_index(path=path, format=cfg.format, backup=cfg)
 
     def _compare_file(self, fid: int, cfg2: BaseFile) -> FileDiff:
         """Compare current file with backup. Return diff if updated."""
-        cfg1 = cfg2.__class__.from_backup(self._get_head_path(fid))
+        cfg1 = self._load_backup(cfg2.__class__, fid)
         diff = cfg1.diff(cfg2)
         if not diff:
             return
-        self._update_index(fid, version_inc=1)
-        cfg2.save(self._get_head_path(fid))
+        version = self._update_index(fid, version_inc=1, backup=cfg2)
         if self._max_depth != 0:
-            diff.save(self._get_diff_path(fid))
+            self._insert_diff(fid, version, diff)
             # Find and remove out-of-date diff file
             _, _, latest_ver, _ = self._index(fid)
-            diff_file = self._get_diff_path(fid, latest_ver - self._max_depth)
-            if self._max_depth > 0 and osp.exists(diff_file):
-                os.remove(diff_file)
+            if self._max_depth > 0:
+                self._delete_diff(fid, latest_ver - self._max_depth)
         return diff
 
     @if_enabled
@@ -484,7 +525,7 @@ class FileTracker:
         if fid is None:
             raise KeyError("File not being watched")
         _, _, latest_ver, format = self._index(fid)
-        cfg = _name_to_type[format].from_backup(self._get_head_path(fid))
+        cfg = self._load_backup(_name_to_type[format], fid)
 
         target_ver = version if version >= 0 else latest_ver + version
         if target_ver < 0 or target_ver > latest_ver:
@@ -494,7 +535,7 @@ class FileTracker:
             warnings.warn("Target version exceeds maximum version depth")
 
         for ver in range(latest_ver, target_ver, -1):
-            diff = FileDiff.from_backup(self._get_diff_path(fid, ver))
+            diff = self._load_diff(fid, ver)
             cfg = cfg.reset(diff)
         
         return cfg
@@ -547,7 +588,8 @@ def _test_tracker():
             shutil.rmtree(settings.tracker_cachedir)
         # Truncate table
         with dbconn.cursor() as cursor:
-            cursor.execute('TRUNCATE TABLE tracked_index')
+            cursor.execute('TRUNCATE TABLE tracker_index')
+            cursor.execute('TRUNCATE TABLE tracker_diff')
         print('[Clear]')
     
     print('===  Basic Test  ===')
@@ -570,7 +612,9 @@ def _test_tracker():
     print('Watch', files[1], t)
     t.join()
     print('Index', tracker._index())
-    print('Compare', tracker.watch_or_compare(files[1]))
+    t = tracker.watch_or_compare(files[1])
+    print('Compare', t)
+    t.join()
     with open(files[1], 'w') as fo:
         print("""[example]
               b = 3
@@ -603,7 +647,8 @@ def _test_tracker():
 
     print('===  Version depth test  ===')
     clear_all()
-    tracker = FileTracker(max_depth=1)
+    settings.tracker_depth = 1
+    tracker = FileTracker()
     print('Init')
     with open(files[0], 'w') as fo:
         print("""[example]
@@ -611,11 +656,13 @@ def _test_tracker():
     print('[Create]', files[0])
     t = tracker.watch_or_compare(files[0])
     print('Watch', files[0], t)
+    t.join()
     with open(files[0], 'a') as fo:
         print('b = 2', file=fo)
     print('[Modify]', files[0])
     t = tracker.watch_or_compare(files[0])
     print('Compare', t)
+    t.join()
     with open(files[0], 'a') as fo:
         print('c = 3', file=fo)
     print('[Modify]', files[0])

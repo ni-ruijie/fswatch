@@ -170,7 +170,10 @@ class SQLConnectionPool(SQLConnection):
     def __init__(self, pool_size=8):
         super().__init__()
         self._pool_size = pool_size
-        self._sem = Semaphore(pool_size)
+        if macros.LIB_SQL == 'pymysql':
+            self._sem = Semaphore(1)
+        else:
+            self._sem = Semaphore(pool_size)
 
     @property
     def _pool(self) -> MySQLConnectionPool:

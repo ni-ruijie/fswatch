@@ -51,7 +51,6 @@ class Worker(threading.Thread):
         self._db_logger.init_conn()
 
         self._buffer = InotifyBuffer(self._read_events)
-        self._callback_queue = Queue()
 
         self._init_paths = paths
         logger.debug(f'Worker {self}: Watching {paths} using Inotify instance {self._fd}')
@@ -88,14 +87,13 @@ class Worker(threading.Thread):
                         raise
                 break
         else:
-            while True:
-                try:
-                    event_buffer = os.read(self._fd, event_buffer_size)
-                except OSError as e:
-                    if e.errno == errno.EAGAIN:
-                        return []
-                    else:
-                        raise
+            try:
+                event_buffer = os.read(self._fd, event_buffer_size)
+            except OSError as e:
+                if e.errno == errno.EAGAIN:
+                    return []
+                else:
+                    raise
 
         self._controller.signal_inotify_stats(self._controller.READ)
 
@@ -252,28 +250,23 @@ class Worker(threading.Thread):
         del self._path_for_wd[wd]
         # logger.debug(f'wd: {self._path_for_wd}')
 
-    def _queue_for_emit(self, event):
-        self._callback_queue.put(event)
-
     def _emit(self, event):
         for route in event.select_routes(self._channel.routes):
             self._channel.emit(route, **event.get_fields())
 
     def run(self):
         while not self._stopped_event.is_set():
-            # Alternately read from _buffer and _callback_queue
-            for event in (self._buffer.read_event(),
-                          None if self._callback_queue.empty() else self._callback_queue.get()):
-                if event is not None:
-                    self._emit(event)
-                    self._db_logger.log_event(event)
+            event = self._buffer.read_event()
+            if event is not None:
+                self._emit(event)
+                self._db_logger.log_event(event)
 
-                    if event.is_create_file:
-                        self._controller._tracker.watch_or_compare(event.src_path, self._queue_for_emit)
-                    if event.is_modify_file:
-                        self._controller._tracker.watch_or_compare(event.src_path, self._queue_for_emit)
-                    # NOTE: We do not record the deletion of a tracked file, and when
-                    #       the file is created again, it is regarded as the previous one.
+                if event.is_create_file:
+                    self._controller._tracker.watch_or_compare(event.src_path, self._buffer._queue.put)
+                if event.is_modify_file:
+                    self._controller._tracker.watch_or_compare(event.src_path, self._buffer._queue.put)
+                # NOTE: We do not record the deletion of a tracked file, and when
+                #       the file is created again, it is regarded as the previous one.
 
     def stop(self):
         self._db_logger.stop()

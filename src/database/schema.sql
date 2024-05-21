@@ -1,6 +1,6 @@
-CREATE DATABASE IF NOT EXISTS fswatch_db;
+-- CREATE DATABASE IF NOT EXISTS fswatch_db;
 
-USE fswatch_db;
+-- USE fswatch_db;
 
 CREATE TABLE IF NOT EXISTS logs (
     unique_time DECIMAL(20,10) NOT NULL, -- 10 digits for datetime, 6 for microseconds, 4 for incremental id
@@ -11,14 +11,6 @@ CREATE TABLE IF NOT EXISTS logs (
     PRIMARY KEY (unique_time)
 );
 
-CREATE TABLE IF NOT EXISTS tracked_index (
-    fid INT NOT NULL AUTO_INCREMENT,
-    path VARCHAR(255) NOT NULL,
-    version SMALLINT UNSIGNED NOT NULL,
-    format CHAR(3) NOT NULL, -- file format: INI, GEN(ERIC)
-    PRIMARY KEY (fid)
-);
-
 CREATE TABLE IF NOT EXISTS aux_logs (
     id INT NOT NULL AUTO_INCREMENT,
     time DECIMAL(16,6) NOT NULL, -- 10 digits for datetime, 6 for microseconds
@@ -27,4 +19,20 @@ CREATE TABLE IF NOT EXISTS aux_logs (
     dest_path VARCHAR(255),
     monitor_pid INT UNSIGNED NOT NULL,
     PRIMARY KEY (id)
+);
+
+CREATE TABLE IF NOT EXISTS tracker_index (
+    fid INT NOT NULL AUTO_INCREMENT,
+    path VARCHAR(255) NOT NULL,
+    version SMALLINT UNSIGNED NOT NULL,
+    format CHAR(3) NOT NULL, -- file format: INI, GEN(ERIC)
+    backup JSON,
+    PRIMARY KEY (fid)
+);
+
+CREATE TABLE IF NOT EXISTS tracker_diff (
+    fid INT NOT NULL,
+    version SMALLINT UNSIGNED NOT NULL,
+    diff JSON NOT NULL,
+    PRIMARY KEY (fid, version)
 );

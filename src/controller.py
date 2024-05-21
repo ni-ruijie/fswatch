@@ -7,6 +7,7 @@
 # NOTE: inotify limits can be reassigned by
 #       `sysctl fs.inotify.max_user_watches=65536`
 
+import macros
 import click
 import os
 import os.path as osp
@@ -38,6 +39,8 @@ class Shell(Thread):
                         self._callback(cmd)
                     except Exception as e:
                         logger.error(repr(e))
+                        if macros.RAISE_CONTROLLER:
+                            raise e
 
     def query(self, prompt: str) -> str:
         with self._lock:

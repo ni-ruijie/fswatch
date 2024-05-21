@@ -6,7 +6,7 @@ import csv
 from database.conn import SQLConnection, SQLConnectionPool
 
 
-__all__ = ['BaseIndexer', 'CSVIndexer', 'SQLIndexer']
+__all__ = ['BaseIndexer', 'CSVIndexer', 'SQLIndexer', 'SQLJsonIndexer']
 
 
 class BaseIndexer:
@@ -89,8 +89,9 @@ class CSVIndexer(BaseIndexer):
             writer.writerow((fid, path, version, format))
         return fid
 
-    def update(self, fid: int, path: str = None, version: int = 0) -> None:
+    def update(self, fid: int, path: str = None, version: int = 0) -> dict:
         _line, _path, _version, _format = self._index[fid]
+        old_vals = {'version': _version}
         _path = path or _path
         _version = version(_version) if isinstance(version, collections.abc.Callable) else version
         self._index[fid] = (_line, _path, _version, _format)
@@ -100,6 +101,7 @@ class CSVIndexer(BaseIndexer):
             for fid, (line, path, version, format) in sorted(
                     self._index.items(), key=lambda kv: kv[1][0]):
                 writer.writerow((fid, path, version, format))
+        return old_vals
 
     def delete(self, fid: None) -> None:
         # TODO
@@ -117,6 +119,7 @@ class SQLIndexer(BaseIndexer):
         super().__init__(cols)
         self._table = table
         self._conn = conn
+        self._lock = Lock()
 
     def _get_connection(func):
         def inner(self, *args, **kwargs):
@@ -137,13 +140,14 @@ class SQLIndexer(BaseIndexer):
         return inner
 
     @_get_connection
-    def select(self, conn, key=None) -> tuple:
+    def select(self, conn, key=None, cols=None) -> tuple:
+        fmt_fields = ', '.join(cols or self._cols)
         with conn.cursor() as cursor:
             if key is None:
-                cursor.execute(f'SELECT * FROM {self._table}')
+                cursor.execute(f'SELECT {fmt_fields} FROM {self._table}')
                 ret = cursor.fetchall()
             else:
-                cursor.execute(f'SELECT * FROM {self._table} WHERE {self._primary}=%s', (key,))
+                cursor.execute(f'SELECT {fmt_fields} FROM {self._table} WHERE {self._primary}=%s', (key,))
                 ret = cursor.fetchone()
         return ret
         
@@ -157,7 +161,8 @@ class SQLIndexer(BaseIndexer):
         return ret[0]
 
     @_get_connection
-    def insert(self, conn: SQLConnection, **cols) -> int:
+    def insert(self, conn: SQLConnection, table: str = None, **cols) -> int:
+        table = table or self._table
         key = cols.get(self._primary)
         fields = tuple(f for f in cols if cols[f] is not None)
         values = tuple(cols[f] for f in fields)
@@ -165,7 +170,7 @@ class SQLIndexer(BaseIndexer):
             fmt_fields = ', '.join(fields)
             fmt_values = ', '.join(('%s',) * len(values))
             cursor.execute(
-                f'INSERT INTO {self._table} ({fmt_fields}) VALUES ({fmt_values})',
+                f'INSERT INTO {table} ({fmt_fields}) VALUES ({fmt_values})',
                 values)
             if key is None:  # for AUTO_INCREMENT primary key
                 cursor.execute(f'SELECT LAST_INSERT_ID()')
@@ -173,12 +178,12 @@ class SQLIndexer(BaseIndexer):
         return key
 
     @_get_connection
-    def update(self, conn: SQLConnection, key, **cols) -> None:
+    def update(self, conn: SQLConnection, key, **cols) -> dict:
         with conn.transaction(isolation_level='REPEATABLE READ') as cursor:
             fields = tuple(f for f in cols if cols[f] is not None)
             fmt_fields = ', '.join(fields)
             cursor.execute(
-                f'SELECT ({fmt_fields}) FROM {self._table} WHERE {self._primary}=%s',
+                f'SELECT {fmt_fields} FROM {self._table} WHERE {self._primary}=%s',
                 (key,))
             ret = cursor.fetchone()
             if not ret:
@@ -188,12 +193,44 @@ class SQLIndexer(BaseIndexer):
                 if isinstance(cols[field], collections.abc.Callable):
                     new_val = cols[field](val)  # TODO: this can be reduced to `version = version + 1`
                 else:
-                    new_val = val
+                    new_val = cols[field]
                 values.append(new_val)
             assignments = ', '.join([f'{f} = %s' for f in fields])
             cursor.execute(
                 f'UPDATE {self._table} SET {assignments} WHERE {self._primary}=%s',
                 tuple(values) + (key,))
+        return dict(zip(fields, values))
             
     def lock(self, name: str) -> None:
-        return self._conn.lock(name)
+        return self._conn.lock(name)  # FIXME: GET_LOCK not working
+
+
+class SQLJsonIndexer(SQLIndexer):
+    def __init__(self, backup_table: str, diff_table: str,
+                 cols: tuple, backup_col: str, diff_col: str,
+                 conn: SQLConnectionPool = None):
+        super().__init__(backup_table, cols, conn)
+        self._diff_table = diff_table
+        self._backup_col = backup_col
+        self._diff_col = diff_col
+        
+    @SQLIndexer._get_connection
+    def select_diff(self, conn: SQLConnection, **keys) -> dict:
+        conds = ' AND '.join([f'{f}=%s' for f in keys])
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f'SELECT {self._diff_col} FROM {self._diff_table} WHERE {conds}',
+                tuple(keys.values()))
+            ret = cursor.fetchone()
+        return ret
+        
+    def insert_diff(self, *args, **kwargs):
+        return super().insert(*args, table=self._diff_table, **kwargs)
+    
+    @SQLIndexer._get_connection
+    def delete_diff(self, conn: SQLConnection, **keys) -> None:
+        conds = ' AND '.join([f'{f}=%s' for f in keys])
+        with conn.transaction() as cursor:
+            cursor.execute(
+                f'DELETE FROM {self._diff_table} WHERE {conds}',
+                tuple(keys.values()))
