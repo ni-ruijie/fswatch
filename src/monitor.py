@@ -6,6 +6,8 @@ import threading
 import errno
 import os
 import os.path as osp
+import select
+import sys
 from queue import Queue
 from typing import Iterable, List
 from loguru import logger
@@ -34,7 +36,7 @@ class Worker(threading.Thread):
         self._controller = controller
 
         self._lock = threading.Lock()
-        self._readable = threading.Condition(self._lock)
+        self._signal_r, self._signal_w = os.pipe()
 
         self._fd = inotify_init()
         self._blocking = settings.worker_blocking_read
@@ -87,13 +89,10 @@ class Worker(threading.Thread):
                         raise
                 break
         else:
-            try:
-                event_buffer = os.read(self._fd, event_buffer_size)
-            except OSError as e:
-                if e.errno == errno.EAGAIN:
-                    return []
-                else:
-                    raise
+            rlist, _, _ = select.select([self._fd, self._signal_r], [], [])
+            if self._fd not in rlist:
+                return []
+            event_buffer = os.read(self._fd, event_buffer_size)
 
         self._controller.signal_inotify_stats(self._controller.READ)
 
@@ -273,6 +272,7 @@ class Worker(threading.Thread):
         self._stopped_event.set()
         self._buffer.stop()
 
+        os.write(self._signal_w, b' ')
         os.close(self._fd)
         self._wd_for_path = {}
         self._path_for_wd = {}

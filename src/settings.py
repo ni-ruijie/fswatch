@@ -22,8 +22,7 @@ class _T:
 # For monitor and all workers
 worker_every_path = False  # if true, use one worker thread (along with an inotify instance) for each path
 worker_extra_mask = ''  # record additional inotify events to database, or only record route_events if not set
-worker_blocking_read = True  # blocking or non-blocking read from the inotify file descriptor
-# NOTE: blocking read blocks program from elegant exiting, while non-blocking read causes busy waiting
+worker_blocking_read = False
 
 # For file tracking
 tracker_cachedir = '.track'
