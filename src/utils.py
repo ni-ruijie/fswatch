@@ -57,20 +57,21 @@ def overwrite_settings(parser=None, argv=None):
     for item in dir(settings):
         if not item.startswith('_'):
             value = getattr(settings, item)
+            kwargs = {k: getattr(value, k) for k in ('choices', 'help') if hasattr(value, k)}
             if isinstance(value, dict):
                 continue  # can only by modified by json config files
             elif isinstance(value, Iterable) and not isinstance(value, str):
                 parser.add_argument(
                     f'--{item}',
                     type=value.dtype if hasattr(value, 'dtype') else type(value[0]),
-                    nargs='*', default=None)
-            elif isinstance(value, bool):
+                    nargs='*', default=None, **kwargs)
+            elif isinstance(value, bool) or hasattr(value, 'is_bool'):
                 if value:
-                    parser.add_argument(f'--{item}', action='store_false')
+                    parser.add_argument(f'--{item}', action='store_false', **kwargs)
                 else:
-                    parser.add_argument(f'--{item}', action='store_true')
+                    parser.add_argument(f'--{item}', action='store_true', **kwargs)
             else:
-                parser.add_argument(f'--{item}', type=type(value), default=None)
+                parser.add_argument(f'--{item}', type=type(value), default=None, **kwargs)
             items[item] = value
 
     args = parser.parse_args(argv.split(' ') if type(argv) == str else argv)
@@ -88,7 +89,7 @@ def overwrite_settings(parser=None, argv=None):
     logger.info(f'arguments > settings')
     for item in items:
         value = getattr(args, item)
-        if value is not None and value != items[item]:
+        if value is not None and getattr(settings, item) != value:
             setattr(settings, item, value)
             logger.info(f'settings.{item} = {value!r}')
 
