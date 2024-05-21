@@ -77,11 +77,11 @@ class HistogramMeter(BaseMeter):
     def get(self) -> dict:
         self.update()
         self._prev = {
-            'from_time': datetime.fromtimestamp(self._tic),
-            'to_time': datetime.fromtimestamp(self._toc),
-            'all_data': self._data,
-            'histogram': {k: len(self._data[k]) for k in self._data},
-            'count': self._cnt
+            'stats_from_time': datetime.fromtimestamp(self._tic),
+            'stats_to_time': datetime.fromtimestamp(self._toc),
+            'stats_all': self._data,
+            'stats_histogram': {k: len(self._data[k]) for k in self._data},
+            'stats_count': self._cnt
         }
         self._data = {}
         self._cnt = 0
