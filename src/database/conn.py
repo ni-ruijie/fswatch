@@ -234,20 +234,21 @@ class SQLEventLogger(Thread, SQLConnection):
     def run(self) -> None:
         while not self._stopped_event.is_set():
             event = self._queue.get()
-            if event is not None:
-                for _ in range(self._max_retry+1):
-                    try:
-                        self._log_event(event)
-                        break
-                    except:
-                        pass
-                else:
-                    logger.warning(f'Cannot record {event} into table logs. Max retry exceeds')
-                    try:
-                        self._log_event(event, direct_to_aux=True)
-                    except Exception as e:
-                        logger.error(f'Cannot record {repr(event)} into table aux_logs either: '
-                                     f'{e.__class__.__name__} "{e}"')
+            if event is None:
+                continue
+            for _ in range(self._max_retry+1):
+                try:
+                    self._log_event(event)
+                    break
+                except:
+                    pass
+            else:
+                logger.warning(f'Cannot record {event} into table logs. Max retry exceeds')
+                try:
+                    self._log_event(event, direct_to_aux=True)
+                except Exception as e:
+                    logger.error(f'Cannot record {repr(event)} into table aux_logs either: '
+                                    f'{e.__class__.__name__} "{e}"')
             if macros.TEST_SQL_DELAY:
                 elapsed = time() - event._time
                 logger.trace(f'SQL delayed {elapsed} secs')
@@ -324,4 +325,6 @@ class SQLEventLogger(Thread, SQLConnection):
         return events
 
     def stop(self):
+        self.close_conn()
+        self._queue.put(None)
         self._stopped_event.set()

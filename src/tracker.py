@@ -1,3 +1,4 @@
+import macros
 import re
 import os
 import os.path as osp
@@ -420,6 +421,10 @@ class FileTracker:
         return thread
     
     def _watch_or_compare(self, path: str, callback: callable = None) -> None:
+        if macros.TEST_TRACKER_DELAY:
+            from time import time
+            tic = time()
+
         # XXX: This function uses 2 or 3 SQL connections, which could be reduced to 1
         cfg = self._match_pattern(path)
         if cfg is None:
@@ -435,6 +440,10 @@ class FileTracker:
                     callback(event)
             else:
                 self._watch_file(cfg)
+
+        if macros.TEST_TRACKER_DELAY:
+            elapsed = time() - tic
+            logger.trace(f'Tracker used {elapsed} secs processing {path}')
 
     @if_enabled
     def watch_dir(self, path: str) -> None:

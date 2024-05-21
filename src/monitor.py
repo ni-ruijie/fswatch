@@ -34,7 +34,11 @@ class Worker(threading.Thread):
         self._controller = controller
 
         self._lock = threading.Lock()
+        self._readable = threading.Condition(self._lock)
+
         self._fd = inotify_init()
+        self._blocking = settings.worker_blocking_read
+        os.set_blocking(self._fd, self._blocking)
         self._wd_for_path = {}
         self._path_for_wd = {}
         # These are used for watching symbolic links
@@ -71,17 +75,28 @@ class Worker(threading.Thread):
 
     def _read_events(self, event_buffer_size=DEFAULT_EVENT_BUFFER_SIZE):
         event_buffer = None
-        while True:
-            try:
-                event_buffer = os.read(self._fd, event_buffer_size)
-            except OSError as e:
-                if e.errno == errno.EINTR:
-                    continue
-                elif e.errno == errno.EBADF:
-                    return []
-                else:
-                    raise
-            break
+        if self._blocking:
+            while True:
+                try:
+                    event_buffer = os.read(self._fd, event_buffer_size)
+                except OSError as e:
+                    if e.errno == errno.EINTR:
+                        continue
+                    elif e.errno == errno.EBADF:
+                        return []
+                    else:
+                        raise
+                break
+        else:
+            while True:
+                try:
+                    event_buffer = os.read(self._fd, event_buffer_size)
+                except OSError as e:
+                    if e.errno == errno.EAGAIN:
+                        return []
+                    else:
+                        raise
+
         self._controller.signal_inotify_stats(self._controller.READ)
 
         event_list = []
@@ -265,9 +280,15 @@ class Worker(threading.Thread):
         self._stopped_event.set()
         self._buffer.stop()
 
+        os.close(self._fd)
+        self._wd_for_path = {}
+        self._path_for_wd = {}
+        self._links_for_path = {}
+        self._path_for_link = {}
+
     @property
     def is_crashed(self):
-        return not self.is_alive() and not self._stopped_event.set()
+        return not self.is_alive() and not self._stopped_event.is_set()
 
     def __str__(self):
         return f'<{self.__class__.__name__}(Thread-{self.native_id}, {self._init_paths})>'

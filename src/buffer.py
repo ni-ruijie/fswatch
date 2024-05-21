@@ -92,6 +92,8 @@ class InotifyBuffer(Thread):
         if not self.is_alive():
             raise BufferError('Attemping to read buffer from an inactive thread')
         e: InotifyEvent = self._queue.get()
+        if e is None:
+            return
         if e._mask & InotifyConstants.IN_MOVED_FROM and not e._mask & ExtendedInotifyConstants.EX_RENAME:
             e = InotifyEvent.from_other(e, mask=InotifyConstants.IN_DELETE)  # unmatched IN_MOVED_FROM after delay
         elif e._mask & InotifyConstants.IN_MODIFY and not e._mask & ExtendedInotifyConstants.EX_IN_MODIFY:
@@ -148,4 +150,5 @@ class InotifyBuffer(Thread):
         return grouped
 
     def stop(self) -> None:
+        self._queue.close()
         self._stopped_event.set()
