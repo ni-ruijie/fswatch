@@ -1,3 +1,5 @@
+from abc import abstractmethod
+from io import StringIO
 import macros
 import re
 import os
@@ -62,8 +64,9 @@ class BaseRecord:
 
 
 class FileDiff(BaseRecord):
-    def __init__(self, diff: dict, *args) -> None:
+    def __init__(self, diff: dict, file_cls = None) -> None:
         super().__init__(diff)
+        self._file_cls = file_cls
 
     @property
     def diff(self) -> dict:
@@ -71,6 +74,11 @@ class FileDiff(BaseRecord):
 
     def __len__(self) -> int:  # used in `if diff` / `if not diff`
         return len(self._data)
+    
+    def to_tree(self) -> str:
+        if self._file_cls is None:
+            return json.dumps(self._data, indent=4)
+        return self._file_cls.diff_to_tree(self._data)
 
 
 class BaseFile(BaseRecord):
@@ -94,7 +102,7 @@ class BaseFile(BaseRecord):
         pass
 
     def diff(self, other) -> FileDiff:
-        return FileDiff(self._diff(self._data, other._data))
+        return FileDiff(self._diff(self._data, other._data), self.__class__)
 
     @staticmethod
     def _diff(cfg1: dict, cfg2: dict) -> dict:
@@ -105,6 +113,15 @@ class BaseFile(BaseRecord):
 
     @staticmethod
     def _reset(cfg: dict, diff: dict) -> dict:
+        pass
+    
+    @abstractmethod
+    def to_raw(self) -> str:
+        pass
+
+    @staticmethod
+    @abstractmethod
+    def diff_to_tree(diff: dict) -> str:
         pass
 
 
@@ -194,6 +211,37 @@ class IniFile(BaseFile):
             else:
                 ret[s] = cfg[s]
         return ret
+    
+    def to_raw(self) -> str:
+        with StringIO() as fo:
+            for s, sec in self._data.items():
+                if not sec:
+                    continue
+                print(f'\n[{s}]', file=fo)
+                for k, v in sec.items():
+                    print(f'{k} = {v}', file=fo)
+            return fo.getvalue().lstrip('\n')
+        
+    @staticmethod
+    def diff_to_tree(diff: Dict) -> str:
+        with StringIO() as fo:
+            for s, sec in diff['add'].items():
+                print('+', f'[{s}]', file=fo)
+                for k, v in sec.items():
+                    print(' ', '+', f'{k}: {v}', file=fo)
+            for s, sec in diff['del'].items():
+                print('-', f'[{s}]', file=fo)
+                for k, v in sec.items():
+                    print(' ', '-', f'{k}: {v}', file=fo)
+            for s, sec in diff['mod'].items():
+                print('*', f'[{s}]', file=fo)
+                for k, v in sec['add'].items():
+                    print(' ', '+', f'{k}: {v}', file=fo)
+                for k, v in sec['del'].items():
+                    print(' ', '-', f'{k}: {v}', file=fo)
+                for k, (v1, v2) in sec['mod'].items():
+                    print(' ', '*', f'{k}: {v1} → {v2}', file=fo)
+            return fo.getvalue()
 
 
 class JsonFile(BaseFile):
@@ -216,6 +264,20 @@ class JsonFile(BaseFile):
         cfg1 = {}
         _dict_reset(cfg1, cfg, diff)
         return cfg1
+    
+    def to_raw(self) -> str:
+        return str(self)
+    
+    @staticmethod
+    def diff_to_tree(diff: Dict) -> str:
+        with StringIO() as fo:
+            for k, v in diff['add'].items():
+                print('+', f'{k!r}: {v!r}', file=fo)
+            for k, v in diff['del'].items():
+                print('-', f'{k!r}: {v!r}', file=fo)
+            for k, (v1, v2) in diff['mod'].items():
+                print('*', f'{k!r}: {v1!r} → {v2!r}', file=fo)
+            return fo.getvalue()
 
 
 class GenericFile(BaseFile):
@@ -292,6 +354,16 @@ class GenericFile(BaseFile):
         for cur_line in range(cur_line, len(b)):
             a.append(b[cur_line])
         return {'lines': a}
+    
+    def to_raw(self) -> str:
+        return ''.join(self._data['lines'])
+    
+    @staticmethod
+    def diff_to_tree(diff: Dict) -> str:
+        with StringIO() as fo:
+            for t, line, mod in diff['add/del']:
+                print(f'{line:4d}', t, mod, end='', file=fo)
+            return fo.getvalue()
     
 
 FileT = TypeVar('FileT', bound=BaseFile)
@@ -476,11 +548,11 @@ class FileTracker:
         with self._indexer.lock(path):
             fid = self._fid_for_path(path)
             if fid is not None:
-                ret = self._compare_file(fid, cfg)
-                if ret and callback is not None:
+                cfg1, cfg2, diff = self._compare_file(fid, cfg)
+                if diff and callback is not None:
                     event = ExtendedEvent(
                         ExtendedInotifyConstants.EX_MODIFY_CONFIG, os.fsencode(path))
-                    event.add_field(diff=ret)
+                    event.add_field(f_before=cfg1, f_after=cfg2, f_diff=diff)
                     callback(event)
             else:
                 self._watch_file(cfg)
@@ -499,12 +571,12 @@ class FileTracker:
         path = cfg.path
         fid = self._insert_index(path=path, format=cfg.format, backup=cfg)
 
-    def _compare_file(self, fid: int, cfg2: BaseFile) -> FileDiff:
+    def _compare_file(self, fid: int, cfg2: BaseFile) -> Tuple[BaseFile, BaseFile, FileDiff]:
         """Compare current file with backup. Return diff if updated."""
         cfg1 = self._load_backup(cfg2.__class__, fid)
         diff = cfg1.diff(cfg2)
         if not diff:
-            return
+            return None, None, None
         version = self._update_index(fid, version_inc=1, backup=cfg2)
         if self._max_depth != 0:
             self._insert_diff(fid, version, diff)
@@ -512,10 +584,10 @@ class FileTracker:
             _, _, latest_ver, _ = self._index(fid)
             if self._max_depth > 0:
                 self._delete_diff(fid, latest_ver - self._max_depth)
-        return diff
+        return cfg1, cfg2, diff
 
     @if_enabled
-    def checkout_file(self, path: str, version: int) -> dict:
+    def checkout_file(self, path: str, version: int) -> BaseFile:
         """Checkout a specified version of a file and return as dict,
         without rewriting the file.
         NOTE: Rows will not be recoverd to the orignal order.

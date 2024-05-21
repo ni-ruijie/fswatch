@@ -28,6 +28,12 @@ class Formatter(string.Formatter):
                 return tabulate([map(str, value.values())], headers=map(str, value.keys()))
             except:
                 pass
+        elif format_spec == 'read':
+            from tracker import BaseFile, FileDiff
+            if isinstance(value, BaseFile):
+                return value.to_raw()
+            elif isinstance(value, FileDiff):
+                return value.to_tree()
         return super().format_field(value, format_spec)
 
 
@@ -77,13 +83,13 @@ def overwrite_settings(parser=None, argv=None):
             if item in cfg:
                 value = type(items[item])(cfg[item])
                 setattr(settings, item, value)
-                logger.info(f'settings.{item} = {repr(value)}')
+                logger.info(f'settings.{item} = {value!r}')
 
     logger.info(f'arguments > settings')
     for item in items:
         value = getattr(args, item)
         if value is not None and value != items[item]:
             setattr(settings, item, value)
-            logger.info(f'settings.{item} = {repr(value)}')
+            logger.info(f'settings.{item} = {value!r}')
 
     return args

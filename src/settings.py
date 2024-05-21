@@ -27,8 +27,8 @@ worker_blocking_read = True  # blocking or non-blocking read from the inotify fi
 
 # For file tracking
 tracker_cachedir = '.track'
-tracker_patterns = (r'.*\.(ini|INI)', r'.*\.py')  # M tracking re patterns
-tracker_filetypes = ('INI', 'GENERIC')  # M corresponding parser types
+tracker_patterns = (r'.*\.(ini|INI)', r'.*\.(json|JSON)', r'.*\.(txt|TXT)')  # M tracking re patterns
+tracker_filetypes = ('INI', 'JSON', 'GENERIC')  # M corresponding parser types
 tracker_indexer = 'sql'  # how to store file versions, choices: csv, sql
 tracker_cachetype = 'sql'  # how to store file backups and diffs, choices: file (store under .track/), sql
 tracker_depth = -1

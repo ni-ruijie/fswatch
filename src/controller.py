@@ -112,7 +112,7 @@ class MasterController:
     @click.pass_context
     def _cmd_checkout(self, path, version):
         self = self.obj
-        logger.success(self._tracker.checkout_file(path, version))
+        logger.success(self._tracker.checkout_file(path, version).to_raw())
 
     @click.command('list')
     @click.argument('var', type=click.Choice(['tracker', 'worker']))
