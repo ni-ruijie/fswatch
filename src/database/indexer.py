@@ -36,7 +36,7 @@ class BaseIndexer:
         pass
 
     @abstractmethod
-    def delete(self, key, **kwargs) -> None:
+    def delete(self, **keys) -> None:
         pass
 
     @abstractmethod
@@ -103,7 +103,7 @@ class CSVIndexer(BaseIndexer):
                 writer.writerow((fid, path, version, format))
         return old_vals
 
-    def delete(self, fid: None) -> None:
+    def delete(self, **fids) -> None:
         # TODO
         raise NotImplementedError()
         _, path, _, _ = self._index[fid]
@@ -204,6 +204,15 @@ class SQLIndexer(BaseIndexer):
     def lock(self, name: str) -> None:
         return self._conn.lock(name)  # FIXME: GET_LOCK not working
 
+    @_get_connection
+    def delete(self, conn: SQLConnection, *keys) -> None:
+        if not keys:
+            return
+        with conn.transaction() as cursor:
+            cursor.execute(
+                f'DELETE FROM {self._table} WHERE {self._primary} IN %s',
+                (keys,))
+
 
 class SQLJsonIndexer(SQLIndexer):
     def __init__(self, backup_table: str, diff_table: str,
@@ -234,3 +243,15 @@ class SQLJsonIndexer(SQLIndexer):
             cursor.execute(
                 f'DELETE FROM {self._diff_table} WHERE {conds}',
                 tuple(keys.values()))
+
+    @SQLIndexer._get_connection
+    def delete(self, conn: SQLConnection, *keys) -> None:
+        if not keys:
+            return
+        with conn.transaction() as cursor:
+            cursor.execute(
+                f'DELETE FROM {self._table} WHERE {self._primary} IN %s',
+                (keys,))
+            cursor.execute(
+                f'DELETE FROM {self._diff_table} WHERE {self._primary} IN %s',
+                (keys,))

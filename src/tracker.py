@@ -395,7 +395,7 @@ class BaseFileTracker:
         self._indexer_type = settings.tracker_indexer
         self._cache_type = settings.tracker_cachetype
 
-        if self._indexer_type == 'csv':
+        if settings.tracker_cachetype == 'file':
             self._dir = settings.tracker_cachedir
             self._backup_dir = osp.join(self._dir, 'backup')
             self._diff_dir = osp.join(self._dir, 'diff')
@@ -403,6 +403,7 @@ class BaseFileTracker:
             _create_dir(self._backup_dir)
             _create_dir(self._diff_dir)
 
+        if self._indexer_type == 'csv':
             self._index_file = osp.join(self._dir, 'index.csv')
             _create_file(self._index_file)
 
@@ -414,16 +415,24 @@ class BaseFileTracker:
                                'File tracker will be disabled.')
                 self._enabled = False
             
-    def if_enabled(func):
+    def skip_disabled(func):
         def inner(self, *args, **kwargs):
             if self._enabled:
                 return func(self, *args, **kwargs)
+        return inner
+            
+    def raise_disabled(func):
+        def inner(self, *args, **kwargs):
+            if self._enabled:
+                return func(self, *args, **kwargs)
+            else:
+                raise RuntimeError("Tracker not enabled")
         return inner
 
     def _index(self, fid: int = None) -> Tuple[int, str, int, str]:
         return self._indexer.select(fid)
     
-    @if_enabled
+    @raise_disabled
     def __iter__(self) -> Iterator[Dict]:
         for fid, path, version, format in self._indexer.select():
             yield {'path': path, 'version': version, 'format': format}
@@ -471,7 +480,7 @@ class BaseFileTracker:
                     re.fullmatch(pattern, osp.relpath(path)):
                 return filetype.from_file(path)
     
-    @if_enabled
+    @skip_disabled
     def watch_or_compare(self, path: str, callback: callable = None) -> Thread:
         thread = Thread(target=self._watch_or_compare, args=(path, callback))
         thread.start()
@@ -486,23 +495,22 @@ class BaseFileTracker:
         cfg = self._match_pattern(path)
         if cfg is None:
             return
-        with self._indexer.lock(path):
-            fid = self._fid_for_path(path)
-            if fid is not None:
-                cfg1, cfg2, diff = self._compare_file(fid, cfg)
-                if diff and callback is not None:
-                    event = ExtendedEvent(
-                        ExtendedInotifyConstants.EX_MODIFY_CONFIG, os.fsencode(path))
-                    event.add_field(f_before=cfg1, f_after=cfg2, f_diff=diff)
-                    callback(event)
-            else:
-                self._watch_file(cfg)
+        fid = self._fid_for_path(path)
+        if fid is not None:
+            cfg1, cfg2, diff = self._compare_file(fid, cfg)
+            if diff and callback is not None:
+                event = ExtendedEvent(
+                    ExtendedInotifyConstants.EX_MODIFY_CONFIG, os.fsencode(path))
+                event.add_field(f_before=cfg1, f_after=cfg2, f_diff=diff)
+                callback(event)
+        else:
+            self._watch_file(cfg)
 
         if macros.TEST_TRACKER_DELAY:
             elapsed = time() - tic
             logger.trace(f'Tracker used {elapsed} secs processing {path}')
 
-    @if_enabled
+    @skip_disabled
     def watch_dir(self, path: str) -> None:
         for file in os.listdir(path):
             self._watch_or_compare(osp.join(path, file))
@@ -527,7 +535,7 @@ class BaseFileTracker:
                 self._delete_diff(fid, latest_ver - self._max_depth)
         return cfg1, cfg2, diff
 
-    @if_enabled
+    @raise_disabled
     def checkout_file(self, path: str, version: int) -> BaseFile:
         """Checkout a specified version of a file and return as dict,
         without rewriting the file.
@@ -552,6 +560,20 @@ class BaseFileTracker:
             cfg = cfg.reset(diff)
         
         return cfg
+    
+    @raise_disabled
+    def wipe(self) -> int:
+        """Clear the index, backup and diff of unused files."""
+        ids = {}
+        for fid, path, version, format in self._indexer.select():
+            if not osp.exists(path):
+                ids[fid] = version
+        self._wipe(ids)
+        return len(ids)
+    
+    @abstractmethod
+    def _wipe(self, ids) -> None:
+        pass
 
 
 class FileCacheTracker(BaseFileTracker):
@@ -597,6 +619,15 @@ class FileCacheTracker(BaseFileTracker):
         if version is None:
             _, _, version, _ = self._index(fid)
         return osp.join(self._diff_dir, f'{fid}.{version}.json')
+    
+    def _wipe(self, ids: dict) -> None:
+        self._indexer.delete(*ids)
+        for fid, version in ids.items():
+            backup_file = self._get_head_path(fid)
+            if osp.exists(backup_file):
+                os.remove(backup_file)
+            for ver in range(1, version+1):
+                self._delete_diff(fid, ver)
 
 
 class SQLCacheTracker(BaseFileTracker):
@@ -636,6 +667,9 @@ class SQLCacheTracker(BaseFileTracker):
             raise FileNotFoundError(f'fid.version {fid}.{version} not found')
         dic, = ret
         return FileDiff(json.loads(dic))
+    
+    def _wipe(self, ids) -> None:
+        self._indexer.delete(*ids)
 
 
 def FileTracker():

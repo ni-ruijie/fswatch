@@ -21,6 +21,8 @@ from tracker import FileTracker
 import settings
 from event import ExtendedInotifyConstants, ExtendedEvent
 from scheduler import EPS, SlidingAverageMeter, IntervalScheduler
+from tabulate import tabulate
+import utils
 
 
 class Shell(Thread):
@@ -91,7 +93,7 @@ class MasterController:
         self._workers = []
 
         self._shell = Shell(self.parse_cmd)
-        for cmd in self._cmd_exit, self._cmd_checkout, self._cmd_list, self._cmd_stop:
+        for cmd in self._cmd_exit, self._cmd_checkout, self._cmd_list, self._cmd_clear, self._cmd_stop:
             self._cli.add_command(cmd)
 
     @click.group()
@@ -120,10 +122,20 @@ class MasterController:
     def _cmd_list(self, var):
         self = self.obj
         if var == 'tracker':
-            logger.success(list(self._tracker))
+            lst = list(self._tracker)
+            logger.success(f'{len(lst)} file(s) in tracked\n' + tabulate(lst, headers='keys'))
         elif var == 'worker':
-            logger.success({worker.native_id: worker._path_for_wd for worker in self._workers
-                            if worker.native_id is not None})
+            dic = {worker.native_id: worker._path_for_wd for worker in self._workers if worker.native_id is not None}
+            logger.success(f'{len(dic)} worker(s)\n' + utils.treeify(dic, headers=('worker', 'watch')))
+
+    @click.command('clear')
+    @click.argument('var', type=click.Choice(['tracker']))
+    @click.pass_context
+    def _cmd_clear(self, var):
+        self = self.obj
+        if var == 'tracker':
+            cnt = self._tracker.wipe()
+            logger.success(f'Removed {cnt} record(s).')
             
     @click.command('stop')
     @click.argument('pid', type=int)
