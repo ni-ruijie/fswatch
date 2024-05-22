@@ -3,7 +3,7 @@ from abc import abstractmethod
 from math import modf
 from datetime import datetime
 from time import time
-from typing import Callable
+from typing import Callable, List
 from threading import Thread, Lock, Semaphore, Event
 if macros.LIB_SQL == 'mysql.connector':
     import mysql.connector as libsql
@@ -295,7 +295,7 @@ class SQLEventLogger(Thread, SQLConnection):
                 
     @ConnectionSingleton.lazy_init
     def query_event(self, from_time: datetime = None, to_time: datetime = None,
-                    pattern: str = None, mask: int = None, pid: int = None) -> tuple:
+                    pattern: str = None, mask: int = None, pid: int = None) -> List[InotifyEvent]:
         # NOTE: `pattern` is a SQL pattern
         conditions = []
         if from_time:

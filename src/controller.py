@@ -25,6 +25,7 @@ from tabulate import tabulate
 import utils
 import shlex
 import pathlib
+import glob
 
 
 class Shell(Thread):
@@ -185,7 +186,7 @@ class MasterController:
         self = self.obj
         if var == 'tracker':
             lst = list(self._tracker)
-            logger.success(f'{len(lst)} file(s) in tracked\n' + tabulate(lst, headers='keys'))
+            logger.success(f'{len(lst)} file(s) being tracked\n' + tabulate(lst, headers='keys'))
         elif var == 'worker':
             dic = {worker.native_id: worker._path_for_wd for worker in self._workers if worker.native_id is not None}
             logger.success(f'{len(dic)} worker(s)\n' + utils.treeify(dic, headers=('worker', 'watch')))
@@ -240,11 +241,33 @@ class MasterController:
                 worker._add_dir_watch(os.fsencode(path), worker._mask)
             logger.success(f'Paths added.\n' + utils.treeify(worker._path_for_wd, headers=('watch',)))
 
+    @_cli.command('query')
+    @click.option('--from_time', type=click.DateTime())
+    @click.option('--to_time', type=click.DateTime())
+    @click.option('--pattern')
+    @click.option('--mask')
+    @click.option('--pid', type=int)
+    def __(from_time, to_time, pattern, mask, pid):
+        from dispatcher import Route
+        from database.conn import SQLEventLogger
+        q = SQLEventLogger()
+        ret = q.query_event(
+            from_time, to_time, pattern,
+            Route.parse_mask_from_str(mask) if mask else None, pid
+        )
+        lst = [{'event': e.full_event_name, 'src': e.src_path, 'dest': e.dest_path, 'time': e._time} for e in ret]
+        q.stop()
+        logger.success(f'{len(ret)} events\n' + tabulate(lst, headers='keys'))
+
     def parse_cmd(self, cmd: str) -> None:
-        args = shlex.split(cmd)  # parse using shell-like syntax
-        cmd, args = args[0], args[1:]
+        shargs = shlex.split(cmd)  # parse using shell-like syntax
+        cmd, shargs = shargs[0], shargs[1:]
         p = pathlib.Path('.')
-        args = [str((p / a).expanduser()) for a in args]
+        args = []
+        for a in shargs:
+            a = osp.expanduser(a)
+            g = glob.glob(a)
+            args += g if g else [str(p / a)]
         self._cli.invoke(self._cli.make_context('controller', [cmd] + args, obj=self))
 
     def start(self):
