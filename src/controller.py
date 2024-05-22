@@ -7,6 +7,8 @@
 # NOTE: inotify limits can be reassigned by
 #       `sysctl fs.inotify.max_user_watches=65536`
 
+import IPython.terminal
+import IPython.terminal.embed
 import macros
 import click
 import os
@@ -26,6 +28,7 @@ import utils
 
 
 class Shell(Thread):
+    """A simple shell."""
     def __init__(self, callback: Callable[[str], None]) -> None:
         super().__init__()
         self._callback = callback
@@ -36,13 +39,16 @@ class Shell(Thread):
         while not self._stopped_event.is_set():
             with self._lock:
                 cmd = sys.stdin.readline().rstrip('\n')
-                if cmd:
-                    try:
-                        self._callback(cmd)
-                    except Exception as e:
-                        logger.error(repr(e))
-                        if macros.RAISE_CONTROLLER:
-                            raise e
+                self.run_cmd(cmd)
+                        
+    def run_cmd(self, cmd) -> None:
+        if cmd:
+            try:
+                self._callback(cmd)
+            except Exception as e:
+                logger.error(repr(e))
+                if macros.RAISE_CONTROLLER:
+                    raise e
 
     def query(self, prompt: str) -> str:
         with self._lock:
@@ -51,6 +57,57 @@ class Shell(Thread):
     
     def stop(self):
         self._stopped_event.set()
+
+
+from IPython.terminal.ipapp import load_default_config
+from IPython.terminal.embed import InteractiveShellEmbed
+from IPython.core.interactiveshell import InteractiveShell, ExecutionInfo, ExecutionResult
+import sqlite3
+
+
+class IPythonShell(Shell):
+    """A shell based on hacked IPython."""
+    def __init__(self, callback: Callable[[str], None], **kwargs) -> None:
+        super().__init__(callback)
+
+        config = kwargs.get('config')
+        if config is None:
+            config = load_default_config()
+            config.InteractiveShellEmbed = config.TerminalInteractiveShell
+            kwargs['config'] = config
+        kwargs['config'].update({'TerminalInteractiveShell':{'colors': 'Linux'}})
+
+        frame = sys._getframe(1)
+        shell = InteractiveShellEmbed.instance(_init_location_id='%s:%s' % (
+            frame.f_code.co_filename, frame.f_lineno), **kwargs)
+        shell.run_cell = self.run_cmd
+        shell.banner1 = ''
+        hist = shell.history_manager
+        hist.db = sqlite3.connect(hist.hist_file, check_same_thread=False)
+
+        self._shell = shell
+        self._frame = frame
+    
+    def run(self):
+        shell = self._shell
+        frame = self._frame
+        shell(stack_depth=2,_call_location_id='%s:%s' % (frame.f_code.co_filename, frame.f_lineno))
+        InteractiveShellEmbed.clear_instance()
+        if not self._stopped_event.is_set():
+            self._callback('exit')
+
+    def run_cmd(self, cmd, *args, **kwargs) -> None:
+        super().run_cmd(cmd)
+        info = ExecutionInfo(cmd, True, False, True, None)
+        result = ExecutionResult(info)
+        result.execution_count = self._shell.execution_count
+        self._shell.history_manager.store_inputs(self._shell.execution_count, cmd, cmd)
+        self._shell.execution_count += 1
+        return result
+    
+    def stop(self):
+        self._stopped_event.set()
+        self._shell.ask_exit()
 
 
 class MasterController:
@@ -92,7 +149,7 @@ class MasterController:
 
         self._workers = []
 
-        self._shell = Shell(self.parse_cmd)
+        self._shell = IPythonShell(self.parse_cmd)
         for cmd in self._cmd_exit, self._cmd_checkout, self._cmd_list, self._cmd_clear, self._cmd_stop:
             self._cli.add_command(cmd)
 
