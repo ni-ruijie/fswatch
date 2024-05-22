@@ -44,6 +44,21 @@ def format(s, **kwargs):
     return _fmt.format(s, **kwargs)
 
 
+def treeify(obj: dict, indent=4, headers=None):
+    headers = headers or []
+    headers = {i: h for i, h in enumerate(headers)}
+    lst = []
+    def walk(d, depth):
+        for k, v in d.items():
+            lst.append(' '*(indent*depth) + headers.get(depth, '') + f' {k}:')
+            if isinstance(v, dict):
+                walk(v, depth+1)
+            else:
+                lst[-1] += f' {v!r}'
+    walk(obj, 0)
+    return '\n'.join(lst)
+
+
 def overwrite_settings(parser=None, argv=None):
     import argparse
     from collections.abc import Iterable
@@ -92,5 +107,9 @@ def overwrite_settings(parser=None, argv=None):
         if value is not None and getattr(settings, item) != value:
             setattr(settings, item, value)
             logger.info(f'settings.{item} = {value!r}')
+
+        value = getattr(settings, item)
+        if hasattr(value, 'data'):
+            setattr(settings, item, value.data)
 
     return args
