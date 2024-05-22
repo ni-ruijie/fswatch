@@ -106,10 +106,7 @@ class Worker(threading.Thread):
                 event_list.append(InotifyEvent(wd, mask, cookie, name, b''))
                 # Do _add_dir_watch after overflow since IN_ISDIR|IN_CREATE events may be dropped
                 # XXX: Better in separated thread to prevent another overflow?
-                self._clean_watch()
-                for path in self._init_paths:
-                    path = os.fsencode(path)
-                    self._add_dir_watch(path, self._mask)
+                self.recover()
                 logger.success(f'Auto-recover watches after overflow.')
                 continue
             if mask & InotifyConstants.IN_IGNORED:
@@ -140,6 +137,12 @@ class Worker(threading.Thread):
 
         self._controller.signal_inotify_stats(self._controller.EVENT, len(event_list))
         return event_list
+    
+    def recover(self):
+        self._clean_watch()
+        for path in self._init_paths:
+            path = os.fsencode(path)
+            self._add_dir_watch(path, self._mask)
     
     def _add_link_watch(self, src_path, mask):
         """

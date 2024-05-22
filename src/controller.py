@@ -7,8 +7,6 @@
 # NOTE: inotify limits can be reassigned by
 #       `sysctl fs.inotify.max_user_watches=65536`
 
-import IPython.terminal
-import IPython.terminal.embed
 import macros
 import click
 import os
@@ -25,6 +23,8 @@ from event import ExtendedInotifyConstants, ExtendedEvent
 from scheduler import EPS, SlidingAverageMeter, IntervalScheduler
 from tabulate import tabulate
 import utils
+import shlex
+import pathlib
 
 
 class Shell(Thread):
@@ -59,9 +59,10 @@ class Shell(Thread):
         self._stopped_event.set()
 
 
+from IPython.terminal.prompts import ClassicPrompts
 from IPython.terminal.ipapp import load_default_config
 from IPython.terminal.embed import InteractiveShellEmbed
-from IPython.core.interactiveshell import InteractiveShell, ExecutionInfo, ExecutionResult
+from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
 import sqlite3
 
 
@@ -75,7 +76,7 @@ class IPythonShell(Shell):
             config = load_default_config()
             config.InteractiveShellEmbed = config.TerminalInteractiveShell
             kwargs['config'] = config
-        kwargs['config'].update({'TerminalInteractiveShell':{'colors': 'Linux'}})
+        kwargs['config'].update({'TerminalInteractiveShell':{'colors': 'Linux', 'prompts_class': ClassicPrompts}})
 
         frame = sys._getframe(1)
         shell = InteractiveShellEmbed.instance(_init_location_id='%s:%s' % (
@@ -150,33 +151,37 @@ class MasterController:
         self._workers = []
 
         self._shell = IPythonShell(self.parse_cmd)
-        for cmd in self._cmd_exit, self._cmd_checkout, self._cmd_list, self._cmd_clear, self._cmd_stop:
-            self._cli.add_command(cmd)
 
     @click.group()
     @click.pass_context
     def _cli(self):
         pass
 
-    @click.command('exit')
+    @_cli.command('help')
     @click.pass_context
-    def _cmd_exit(self):
+    def __(ctx):
+        self = ctx.obj
+        logger.info(self._cli.get_help(ctx))
+
+    @_cli.command('exit')
+    @click.pass_context
+    def __(self):
         self = self.obj
         logger.info('Exiting')
         self.close()
         
-    @click.command('checkout')
-    @click.argument('path', type=click.Path(True))
-    @click.argument('version', type=int)
+    @_cli.command('checkout')
+    @click.argument('path', type=click.Path(True, resolve_path=True))
+    @click.option('version', '-v', type=int)
     @click.pass_context
-    def _cmd_checkout(self, path, version):
+    def __(self, path, version):
         self = self.obj
         logger.success(self._tracker.checkout_file(path, version).to_raw())
 
-    @click.command('list')
+    @_cli.command('list')
     @click.argument('var', type=click.Choice(['tracker', 'worker']))
     @click.pass_context
-    def _cmd_list(self, var):
+    def __(self, var):
         self = self.obj
         if var == 'tracker':
             lst = list(self._tracker)
@@ -185,31 +190,62 @@ class MasterController:
             dic = {worker.native_id: worker._path_for_wd for worker in self._workers if worker.native_id is not None}
             logger.success(f'{len(dic)} worker(s)\n' + utils.treeify(dic, headers=('worker', 'watch')))
 
-    @click.command('clear')
+    @_cli.command('clear')
     @click.argument('var', type=click.Choice(['tracker']))
     @click.pass_context
-    def _cmd_clear(self, var):
+    def __(self, var):
         self = self.obj
         if var == 'tracker':
             cnt = self._tracker.wipe()
             logger.success(f'Removed {cnt} record(s).')
-            
-    @click.command('stop')
-    @click.argument('pid', type=int)
-    @click.pass_context
-    def _cmd_stop(self, pid):
-        self = self.obj
+
+    def _get_worker(self, tid):
         for worker in self._workers:
-            if worker.native_id == pid:
-                worker.stop()
-                self._workers.remove(worker)
-                logger.success(f'{worker} stopped.')
-                break
-        else:
-            logger.error('Worker not found')
+            if worker.native_id == tid:
+                return worker
+        logger.error('Worker not found')
+            
+    @_cli.command('stop')
+    @click.option('-t', '--tid', type=int, required=True)
+    @click.pass_context
+    def __(self, tid):
+        self = self.obj
+        if worker := self._get_worker(tid):
+            worker.stop()
+            self._workers.remove(worker)
+            logger.success(f'{worker} stopped.')
+            
+    @_cli.command('recover')
+    @click.option('-t', '--tid', type=int)
+    @click.pass_context
+    def __(self, tid):
+        self = self.obj
+        if tid is None:
+            for worker in self._workers:
+                worker.recover()
+            logger.success('All workers recovered')
+            return
+        if worker := self._get_worker(tid):
+            worker.recover()
+            logger.success(f'{worker} recovered.\n' + utils.treeify(worker._path_for_wd, headers=('watch',)))
+            
+    @_cli.command('watch')
+    @click.argument('paths', type=click.Path(True, resolve_path=True), nargs=-1)
+    @click.option('-t', '--tid', type=int, required=True)
+    @click.pass_context
+    def __(self, paths, tid):
+        self = self.obj
+        if worker := self._get_worker(tid):
+            for path in paths:
+                worker._add_dir_watch(os.fsencode(path), worker._mask)
+            logger.success(f'Paths added.\n' + utils.treeify(worker._path_for_wd, headers=('watch',)))
 
     def parse_cmd(self, cmd: str) -> None:
-        self._cli.invoke(self._cli.make_context('controller', cmd.split(), obj=self))
+        args = shlex.split(cmd)  # parse using shell-like syntax
+        cmd, args = args[0], args[1:]
+        p = pathlib.Path('.')
+        args = [str((p / a).expanduser()) for a in args]
+        self._cli.invoke(self._cli.make_context('controller', [cmd] + args, obj=self))
 
     def start(self):
         for scheduler in self._schedulers.values():
