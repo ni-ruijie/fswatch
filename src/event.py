@@ -161,13 +161,15 @@ class InotifyEvent:
     
     @property
     def is_create_dir(self):
-        mask = InotifyConstants.IN_ISDIR | InotifyConstants.IN_CREATE
-        return self._mask & mask >= mask
+        mask1 = InotifyConstants.IN_ISDIR | InotifyConstants.IN_CREATE
+        # mask2 = InotifyConstants.IN_MOVE_SELF
+        return self._mask & mask1 >= mask1# or self._mask & mask2 >= mask2
     
     @property
     def is_delete_dir(self):
-        mask = InotifyConstants.IN_DELETE_SELF
-        return self._mask & mask >= mask
+        mask1 = InotifyConstants.IN_DELETE_SELF
+        # mask2 = InotifyConstants.IN_ISDIR | InotifyConstants.IN_MOVED_FROM
+        return self._mask & mask1 >= mask1# or self._mask & mask2 >= mask2
     
     @property
     def is_overflow(self):

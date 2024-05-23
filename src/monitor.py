@@ -92,7 +92,13 @@ class Worker(threading.Thread):
             rlist, _, _ = select.select([self._fd, self._signal_r], [], [])
             if self._fd not in rlist:
                 return []
-            event_buffer = os.read(self._fd, event_buffer_size)
+            try:
+                event_buffer = os.read(self._fd, event_buffer_size)
+            except OSError as e:
+                if e.errno == errno.EBADF:
+                    return []
+                else:
+                    raise
 
         self._controller.signal_inotify_stats(self._controller.READ)
 
@@ -238,8 +244,14 @@ class Worker(threading.Thread):
             if err == errno.ENOENT:
                 logger.warning(f'{path} does not exist')
                 return
+            elif err == errno.ENOTDIR:
+                logger.warning(f'{path} is not a directory')
+                return
+            elif err == errno.EEXIST:
+                logger.warning(f'{path} has already been watched')
+                return
             raise SystemError(
-                f'inotify_add_watch failed with errno {errno.errorcode[err]} '
+                f'inotify_add_watch failed with unexpected errno {errno.errorcode[err]} '
                 '(check https://www.man7.org/linux/man-pages/man2/inotify_add_watch.2.html#ERRORS for details)')
         self._wd_for_path[path] = wd
         self._path_for_wd[wd] = path
@@ -294,7 +306,9 @@ def main(args):
     # ===  Init  ===
 
     dispatcher = Dispatcher(name=args.name)
-    mask = InotifyConstants.IN_CREATE | InotifyConstants.IN_DELETE_SELF | InotifyConstants.IN_MODIFY
+    mask = InotifyConstants.IN_CREATE | InotifyConstants.IN_DELETE_SELF | InotifyConstants.IN_MODIFY \
+         | InotifyConstants.IN_MOVED_FROM | InotifyConstants.IN_MOVE_SELF \
+         | InotifyConstants.IN_ONLYDIR | InotifyConstants.IN_MASK_CREATE
     for route in dispatcher.routes:
         mask |= route.event & ~ExtendedInotifyConstants.EX_ALL_EX_EVENTS
     mask |= Route.parse_mask_from_str(settings.worker_extra_mask)
