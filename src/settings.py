@@ -74,7 +74,7 @@ tracker_cachetype = _o('sql', choices=['file', 'sql'],
     help="How to store file backups and diffs; 'file' for store as files under `tracker_cachedir`, 'sql' for store in database")
 tracker_cachedir = '.track'
 tracker_depth = _o(-1, help="The maximum depth of file versions; -1 for infinite depth")
-tracker_poolsize = _o(8, help="Size of the connection pool for multi-threaded file processing; Maximum value is 32.")
+tracker_poolsize = _o(8, help="Size of the connection pool for multi-threaded file processing; Maximum value is 32")
 
 # For message routing
 route_tags = _ol('logs', 'warnings', 'tracks', help="The tags of N routes; events satifying all conditions are routed to a tag")

@@ -69,7 +69,7 @@ import sqlite3
 
 class IPythonShell(Shell):
     """A shell based on hacked IPython."""
-    def __init__(self, callback: Callable[[str], None], **kwargs) -> None:
+    def __init__(self, callback: Callable[[str], None], commands=None, **kwargs) -> None:
         super().__init__(callback)
 
         config = kwargs.get('config')
@@ -81,7 +81,8 @@ class IPythonShell(Shell):
 
         frame = sys._getframe(1)
         shell = InteractiveShellEmbed.instance(_init_location_id='%s:%s' % (
-            frame.f_code.co_filename, frame.f_lineno), **kwargs)
+            frame.f_code.co_filename, frame.f_lineno),
+            user_ns=commands, **kwargs)
         shell.run_cell = self.run_cmd
         shell.banner1 = ''
         hist = shell.history_manager
@@ -151,7 +152,7 @@ class MasterController:
 
         self._workers = []
 
-        self._shell = IPythonShell(self.parse_cmd)
+        self._shell = IPythonShell(self.parse_cmd, commands={**self._cli.commands})
 
     @click.group()
     @click.pass_context
@@ -188,8 +189,9 @@ class MasterController:
             lst = list(self._tracker)
             logger.success(f'{len(lst)} file(s) being tracked\n' + tabulate(lst, headers='keys'))
         elif var == 'worker':
-            dic = {worker.native_id: worker._path_for_wd for worker in self._workers if worker.native_id is not None}
-            logger.success(f'{len(dic)} worker(s)\n' + utils.treeify(dic, headers=('worker', 'watch')))
+            dic = {worker.native_id: {'running': worker.is_alive(), 'watches': worker._path_for_wd, 'links': worker._path_for_link}
+                   for worker in self._workers if worker.native_id is not None}
+            logger.success(f'{len(dic)} worker(s)\n' + utils.treeify(dic, headers=('worker',)))
 
     @_cli.command('clear')
     @click.argument('var', type=click.Choice(['tracker']))
@@ -363,10 +365,10 @@ class MasterController:
             priority = -1  # lower the priority since we have already sent messages
 
         n_workers = len(self._workers)
-        n_inactive_workers = len([worker for worker in self._workers if not worker.is_alive()])
+        n_inactive_workers = len([worker for worker in self._workers if worker.is_crashed])
         if n_inactive_workers:
             self._emit(
-                f'Workers down: {n_inactive_workers} / {n_workers}',
+                f'Workers crashed: {n_inactive_workers} / {n_workers}',
                 msg_zh=
                 f'Worker 崩溃: {n_inactive_workers} / {n_workers}'
             )

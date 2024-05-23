@@ -66,17 +66,17 @@ class DelayedQueue(Generic[T]):
                     self._queue.popleft()
                     return head
 
-    def remove(self, predicate: Callable[[T], bool], replace: Callable[[T], T] = None) -> Optional[T]:
+    def remove(self, predicate: Callable[[T], bool], replace: Callable[[T], T] = None, delay = -1) -> Optional[T]:
         """Remove and return the first items for which predicate is True,
         ignoring delay."""
         with self._lock:
-            for i, (elem, t, delay) in enumerate(self._queue):
+            for i, (elem, t, d) in enumerate(self._queue):
                 if predicate(elem):
                     if replace is None:
                         del self._queue[i]
                     else:
                         elem = replace(elem)
-                        self._queue[i] = (elem, t, False)
+                        self._queue[i] = (elem, t, d if delay == 0 else delay > 0)
                     return elem
         return None
 
@@ -106,7 +106,7 @@ class InotifyBuffer(Thread):
             grouped_events = self._group_events(raw_events)
             for e in grouped_events:
                 delay = False
-                if e._mask & InotifyConstants.IN_MOVED_FROM and not e._mask & ExtendedInotifyConstants.EX_RENAME:
+                if e._mask & InotifyConstants.IN_MOVED_FROM or e._mask & ExtendedInotifyConstants.EX_RENAME:
                     delay = True
                 elif e._mask & InotifyConstants.IN_MODIFY and not e._mask & ExtendedInotifyConstants.EX_IN_MODIFY:
                     delay = True
@@ -114,7 +114,23 @@ class InotifyBuffer(Thread):
 
     def _group_events(self, event_list: Iterable[InotifyEvent]) -> Iterable[InotifyEvent]:
         grouped: List[InotifyEvent] = []
+        e = None
         for e in event_list:
+            # Handle vim save with .swp
+            if e.lsb == InotifyConstants.IN_CREATE:
+                check = lambda x: x._mask & ExtendedInotifyConstants.EX_RENAME and x._src_path == e._src_path
+                replace0 = lambda y: ExtendedEvent(InotifyConstants.IN_CREATE, src_path=y._dest_path)
+                replace = lambda y: ExtendedEvent.from_other(y, mask=InotifyConstants.IN_MODIFY, override=True)
+                for index, e0 in enumerate(grouped):
+                    if check(e0):
+                        grouped[index] = replace0(e0)
+                        e = replace(e)
+                        break
+                else:  # check queue
+                    if e0 := self._queue.remove(check, replace=replace0):
+                        e = replace(e)
+
+            # Handle rename
             if e.lsb == InotifyConstants.IN_MOVED_TO:
                 check = lambda x: x.lsb == InotifyConstants.IN_MOVED_FROM and x._cookie == e._cookie
                 replace = lambda y: ExtendedEvent.from_other(
@@ -122,14 +138,17 @@ class InotifyBuffer(Thread):
                     dest_path=e._src_path)
                 for index, e0 in enumerate(grouped):
                     if check(e0):
-                        grouped[index] = replace(e0)
-                    break
+                        del grouped[index]
+                        e = replace(e0)
+                        break
                 else:  # check queue
-                    if self._queue.remove(check, replace=replace) is None:  # unmatched IN_MOVED_TO before delay
+                    if e0 := self._queue.remove(check):
+                        e = replace(e0)
+                    else:  # unmatched IN_MOVED_TO before delay
                         e = InotifyEvent.from_other(e, mask=InotifyConstants.IN_CREATE)
-                        grouped.append(e)
-                    
-            elif e.lsb == InotifyConstants.IN_MODIFY:
+            
+            # Handle consecutive modify
+            elif e.lsb == InotifyConstants.IN_MODIFY:  # NOTE: IN_MODIFY < IN_CREATE so this works
                 check = lambda x: x.lsb == InotifyConstants.IN_MODIFY and \
                     not x._mask & ExtendedInotifyConstants.EX_IN_MODIFY and \
                     x._src_path == e._src_path
@@ -142,9 +161,8 @@ class InotifyBuffer(Thread):
                 else:  # check queue
                     if self._queue.remove(check, replace=replace) is None:  # unmatched IN_MODIFY before delay
                         e = ExtendedEvent.from_other(e, mask=ExtendedInotifyConstants.EX_BEGIN_MODIFY)
-                grouped.append(e)
-
-            else:
+                        
+            if e is not None:
                 grouped.append(e)
 
         return grouped

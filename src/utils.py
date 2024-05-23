@@ -44,12 +44,14 @@ def format(s, **kwargs):
     return _fmt.format(s, **kwargs)
 
 
-def treeify(obj: dict, indent=4, headers=None):
+def treeify(obj: dict, indent=4, headers=None, show_empty=False):
     headers = headers or []
     headers = {i: h for i, h in enumerate(headers)}
     lst = []
     def walk(d, depth):
         for k, v in d.items():
+            if v == {} and not show_empty:
+                continue
             lst.append(' '*(indent*depth) + headers.get(depth, '') + f' {k}:')
             if isinstance(v, dict):
                 walk(v, depth+1)

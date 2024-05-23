@@ -32,6 +32,7 @@ class Worker(threading.Thread):
                  mask: int = InotifyConstants.IN_ALL_EVENTS):
         super().__init__()
         self._stopped_event = threading.Event()
+        self._crashed = False
         self._channel = channel
         self._controller = controller
 
@@ -86,7 +87,7 @@ class Worker(threading.Thread):
                     elif e.errno == errno.EBADF:
                         return []
                     else:
-                        raise
+                        self._raise(e)
                 break
         else:
             rlist, _, _ = select.select([self._fd, self._signal_r], [], [])
@@ -98,7 +99,7 @@ class Worker(threading.Thread):
                 if e.errno == errno.EBADF:
                     return []
                 else:
-                    raise
+                    self._raise(e)
 
         self._controller.signal_inotify_stats(self._controller.READ)
 
@@ -199,14 +200,18 @@ class Worker(threading.Thread):
             logger.warning(f'{path} is not a directory')
             # raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), path)
             return
-        self._add_watch(path, mask)
+        ret = self._add_watch(path, mask)
+        if not ret:
+            return
 
+        # Add subdirs
         for root, dirnames, _ in os.walk(path):
             for dirname in dirnames:
                 full_path = osp.join(root, dirname)
                 if not osp.islink(full_path):
                     self._add_watch(full_path, mask)
 
+        # Add links
         for root, dirnames, filenames in os.walk(path):
             for dirname in dirnames:
                 full_path = osp.join(root, dirname)
@@ -250,12 +255,19 @@ class Worker(threading.Thread):
             elif err == errno.EEXIST:
                 logger.warning(f'{path} has already been watched')
                 return
-            raise SystemError(
+            elif err == errno.EACCES:
+                logger.warning(f'{path} permission denied')
+                # TODO: Remove watch
+                return
+            self._raise(SystemError(
                 f'inotify_add_watch failed with unexpected errno {errno.errorcode[err]} '
-                '(check https://www.man7.org/linux/man-pages/man2/inotify_add_watch.2.html#ERRORS for details)')
+                '(check https://www.man7.org/linux/man-pages/man2/inotify_add_watch.2.html#ERRORS for details)'))
+        elif wd in self._path_for_wd:  # Changed
+            pass
         self._wd_for_path[path] = wd
         self._path_for_wd[wd] = path
         # logger.debug(f'wd: {self._path_for_wd}')
+        return True
 
     def _rm_watch(self, wd):
         inotify_rm_watch(self._fd, wd)
@@ -283,6 +295,8 @@ class Worker(threading.Thread):
                 #       the file is created again, it is regarded as the previous one.
 
     def stop(self):
+        if self._stopped_event.is_set():
+            return
         self._db_logger.stop()
         self._stopped_event.set()
         self._buffer.stop()
@@ -294,9 +308,14 @@ class Worker(threading.Thread):
         self._links_for_path = {}
         self._path_for_link = {}
 
+    def _raise(self, e):
+        self._crashed = True
+        self.stop()
+        raise(e)
+
     @property
     def is_crashed(self):
-        return not self.is_alive() and not self._stopped_event.is_set()
+        return not self.is_alive() and (self._crashed or not self._stopped_event.is_set())
 
     def __str__(self):
         return f'<{self.__class__.__name__}(Thread-{self.native_id}, {self._init_paths})>'
@@ -307,8 +326,9 @@ def main(args):
 
     dispatcher = Dispatcher(name=args.name)
     mask = InotifyConstants.IN_CREATE | InotifyConstants.IN_DELETE_SELF | InotifyConstants.IN_MODIFY \
-         | InotifyConstants.IN_MOVED_FROM | InotifyConstants.IN_MOVE_SELF \
-         | InotifyConstants.IN_ONLYDIR | InotifyConstants.IN_MASK_CREATE
+         | InotifyConstants.IN_MOVED_FROM | InotifyConstants.IN_MOVED_TO | InotifyConstants.IN_MOVE_SELF \
+         | InotifyConstants.IN_ATTRIB \
+         | InotifyConstants.IN_ONLYDIR# | InotifyConstants.IN_MASK_CREATE
     for route in dispatcher.routes:
         mask |= route.event & ~ExtendedInotifyConstants.EX_ALL_EX_EVENTS
     mask |= Route.parse_mask_from_str(settings.worker_extra_mask)

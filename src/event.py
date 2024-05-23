@@ -162,14 +162,19 @@ class InotifyEvent:
     @property
     def is_create_dir(self):
         mask1 = InotifyConstants.IN_ISDIR | InotifyConstants.IN_CREATE
-        # mask2 = InotifyConstants.IN_MOVE_SELF
+        #mask2 = InotifyConstants.IN_ISDIR | InotifyConstants.IN_MOVED_TO
         return self._mask & mask1 >= mask1# or self._mask & mask2 >= mask2
     
     @property
     def is_delete_dir(self):
         mask1 = InotifyConstants.IN_DELETE_SELF
-        # mask2 = InotifyConstants.IN_ISDIR | InotifyConstants.IN_MOVED_FROM
+        #mask2 = InotifyConstants.IN_MOVE_SELF
         return self._mask & mask1 >= mask1# or self._mask & mask2 >= mask2
+    
+    @property
+    def is_attrib_dir(self):
+        mask = InotifyConstants.IN_ISDIR | InotifyConstants.IN_ATTRIB
+        return self._mask & mask >= mask
     
     @property
     def is_overflow(self):
@@ -240,9 +245,9 @@ class ExtendedEvent(InotifyEvent):
     @classmethod
     def from_other(cls, other: 'InotifyEvent', mask=0, dest_path=None, override=False):
         ret = ExtendedEvent(
-            other._mask if override else other._mask | mask,
+            mask if override else other._mask | mask,
             other._src_path,
-            dest_path=dest_path,
+            dest_path=dest_path or other._dest_path,
             event_time=other._time,
             override=other._mask if override else 0
         )
