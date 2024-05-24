@@ -100,12 +100,14 @@ class InotifyEvent:
             override=other._mask if override else 0
         )
 
-    def select_routes(self, routes: Iterable) -> Iterator:
+    def select_routes(self, routes: Iterable, alt_paths: Iterable = ()) -> Iterator:
+        paths = [self._src_path, self._dest_path, *alt_paths]
         for route in routes:
-            if route.event & self._mask and \
-                    (route.pattern.fullmatch(self._src_path) or
-                     self._dest_path is not None and route.pattern.fullmatch(self._dest_path)):
-                yield route
+            if route.event & self._mask:
+                for path in paths:
+                    if path is not None and route.pattern.fullmatch(path):
+                        yield route
+                        break
 
     def select_procs(self) -> None:
         self._proc = list(LinuxProcess.get_procs_by_filename(os.fsdecode(self._src_path)))

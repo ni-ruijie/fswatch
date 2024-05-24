@@ -6,10 +6,11 @@ import threading
 import errno
 import os
 import os.path as osp
+import pathlib
 import select
 import sys
 from queue import Queue
-from typing import Iterable, List
+from typing import Iterable, List, Dict, Any
 from loguru import logger
 from database.conn import SQLEventLogger
 from linux import *
@@ -143,6 +144,8 @@ class Worker(threading.Thread):
                 self._rm_watch(wd)
 
         self._controller.signal_inotify_stats(self._controller.EVENT, len(event_list))
+        for e in event_list:
+            print(repr(e))
         return event_list
     
     def recover(self):
@@ -277,7 +280,8 @@ class Worker(threading.Thread):
         # logger.debug(f'wd: {self._path_for_wd}')
 
     def _emit(self, event):
-        for route in event.select_routes(self._channel.routes):
+        for route in event.select_routes(self._channel.routes,
+                                         alt_paths=self._resolve_links(event.src_path, event.dest_path)):
             self._channel.emit(route, **event.get_fields())
 
     def run(self):
@@ -314,6 +318,27 @@ class Worker(threading.Thread):
         self._crashed = True
         self.stop()
         raise(e)
+    
+    @staticmethod
+    def _bytes_to_path(b: bytes) -> pathlib.Path:
+        return pathlib.Path(os.fsdecode(b))
+    
+    def _select_subpaths(self, data: dict, parent) -> Iterable:
+        parent = self._bytes_to_path(parent)
+        for k, v in data.items():
+            if pathlib.Path(v).is_relative_to(parent):
+                yield k
+
+    def _resolve_links(self, *paths) -> Iterable:
+        for path in paths:
+            if not path:
+                break
+            path = pathlib.Path(path)
+            for link, dest in self._path_for_link.items():
+                link = self._bytes_to_path(link)
+                dest = self._bytes_to_path(dest)
+                if path.is_relative_to(dest):
+                    yield str(link / path.relative_to(dest))
 
     @property
     def is_crashed(self):
@@ -327,6 +352,7 @@ def main(args):
     # ===  Init  ===
 
     dispatcher = Dispatcher(name=args.name)
+    # These masks are required
     mask = InotifyConstants.IN_CREATE | InotifyConstants.IN_DELETE_SELF | InotifyConstants.IN_MODIFY \
          | InotifyConstants.IN_MOVED_FROM | InotifyConstants.IN_MOVED_TO | InotifyConstants.IN_MOVE_SELF \
          | InotifyConstants.IN_ATTRIB \
