@@ -498,7 +498,6 @@ class BaseFileTracker:
         fid = self._fid_for_path(path)
         if fid is not None:
             cfg1, cfg2, diff = self._compare_file(fid, cfg)
-            print(diff, callback)
             if diff and callback is not None:
                 event = ExtendedEvent(
                     ExtendedInotifyConstants.EX_MODIFY_CONFIG, os.fsencode(path))

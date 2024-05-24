@@ -45,6 +45,7 @@ class Worker(threading.Thread):
         os.set_blocking(self._fd, self._blocking)
         self._wd_for_path = {}
         self._path_for_wd = {}
+        self._mark_for_wd = {}  # states for handling mv dirs
         # These are used for watching symbolic links
         self._links_for_path = {}  # target -> list of links
         self._path_for_link = {}  # link -> unique target
@@ -138,10 +139,23 @@ class Worker(threading.Thread):
                 self._rm_link_watch(src_path)
             
             if event.is_create_dir or event.is_attrib_dir:
-                self._add_dir_watch(src_path, self._mask)
+                self._add_dir_watch(src_path, self._mask, event_wd=wd)
             
-            elif event.is_delete_dir:
+            elif event.is_delete_watch:
                 self._rm_watch(wd)
+            elif event.is_move_dir:  # wd1 IN_MOVED_FROM a
+                wd2 = self._wd_for_path[src_path]
+                self._mark_for_wd[wd] = {'child_wd': wd2}
+                self._mark_for_wd[wd2] = {'parent_wd': wd}
+            elif event.is_move_watch:
+                if path := self._mark_for_wd[wd].get('to_path'):
+                    wd1 = self._mark_for_wd[wd]['parent_wd']
+                    self._mark_for_wd[wd1] = None
+                    for sub_wd, sub_path in list(self._select_subpaths(self._path_for_wd[wd], new_parent=path)):
+                        self._mv_watch(sub_wd, sub_path)
+                else:
+                    for sub_wd in list(self._select_subpaths(self._path_for_wd[wd])):
+                        self._rm_watch(sub_wd)
 
         self._controller.signal_inotify_stats(self._controller.EVENT, len(event_list))
         return event_list
@@ -196,12 +210,12 @@ class Worker(threading.Thread):
             self._rm_dir_watch(self._wd_for_path[path])
         logger.debug(f'links: {self._links_for_path}')
     
-    def _add_dir_watch(self, path, mask):
+    def _add_dir_watch(self, path, mask, event_wd=None):
         if not osp.isdir(path):
             logger.warning(f'{path} is not a directory')
             # raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), path)
             return
-        ret = self._add_watch(path, mask)
+        ret = self._add_watch(path, mask, event_wd=event_wd)
         if not ret:
             return
 
@@ -210,7 +224,7 @@ class Worker(threading.Thread):
             for dirname in dirnames:
                 full_path = osp.join(root, dirname)
                 if not osp.islink(full_path):
-                    self._add_watch(full_path, mask)
+                    self._add_watch(full_path, mask, event_wd=event_wd)
 
         # Add links
         for root, dirnames, filenames in os.walk(path):
@@ -240,7 +254,7 @@ class Worker(threading.Thread):
         for wd in list(self._path_for_wd):
             self._rm_watch(wd)
         
-    def _add_watch(self, path, mask):
+    def _add_watch(self, path, mask, event_wd=None):
         if path in self._wd_for_path:
             if not os.access(path, os.R_OK):
                 logger.warning(f'{path} lost permissions')
@@ -258,6 +272,12 @@ class Worker(threading.Thread):
                 logger.warning(f'{path} is not a directory')
                 return
             elif err == errno.EEXIST:
+                # wd1 IN_MOVED_TO b
+                wd1 = event_wd
+                if 'child_wd' in self._mark_for_wd[wd1]:  # make sure we already have wd1 IN_MOVED_FROM a
+                    wd2 = self._mark_for_wd[wd1]['child_wd']
+                    self._mark_for_wd[wd2]['to_path'] = path
+                    return
                 logger.warning(f'{path} has already been watched')
                 return
             elif err == errno.EACCES:
@@ -270,6 +290,7 @@ class Worker(threading.Thread):
             pass
         self._wd_for_path[path] = wd
         self._path_for_wd[wd] = path
+        self._mark_for_wd[wd] = None
         # logger.debug(f'wd: {self._path_for_wd}')
         return True
 
@@ -278,7 +299,15 @@ class Worker(threading.Thread):
         path = self._path_for_wd[wd]
         del self._wd_for_path[path]
         del self._path_for_wd[wd]
+        del self._mark_for_wd[wd]
         # logger.debug(f'wd: {self._path_for_wd}')
+
+    def _mv_watch(self, wd, path):
+        p = self._path_for_wd[wd]
+        del self._wd_for_path[p]
+        self._path_for_wd[wd] = path
+        self._wd_for_path[path] = wd
+        self._mark_for_wd[wd] = None
 
     def _emit(self, event):
         for route in event.select_routes(self._channel.routes,
@@ -312,6 +341,7 @@ class Worker(threading.Thread):
         os.close(self._fd)
         self._wd_for_path = {}
         self._path_for_wd = {}
+        self._mark_for_wd = {}
         self._links_for_path = {}
         self._path_for_link = {}
 
@@ -324,12 +354,16 @@ class Worker(threading.Thread):
     def _bytes_to_path(b: bytes) -> pathlib.Path:
         return pathlib.Path(os.fsdecode(b))
     
-    def _select_subpaths(self, parent) -> Iterable:
+    def _select_subpaths(self, parent, new_parent=None) -> Iterable:
         data = self._path_for_wd
         parent = self._bytes_to_path(parent)
+        new_parent = self._bytes_to_path(new_parent) if new_parent else None
         for k, v in data.items():
             if self._bytes_to_path(v).is_relative_to(parent):
-                yield k
+                if new_parent:
+                    yield k, os.fsencode(str(new_parent / self._bytes_to_path(v).relative_to(parent)))
+                else:
+                    yield k
 
     def _resolve_links(self, *paths) -> Iterable:
         for path in paths:
