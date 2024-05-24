@@ -359,11 +359,14 @@ class Worker(threading.Thread):
         parent = self._bytes_to_path(parent)
         new_parent = self._bytes_to_path(new_parent) if new_parent else None
         for k, v in data.items():
-            if self._bytes_to_path(v).is_relative_to(parent):
-                if new_parent:
-                    yield k, os.fsencode(str(new_parent / self._bytes_to_path(v).relative_to(parent)))
-                else:
-                    yield k
+            try:
+                rel = self._bytes_to_path(v).relative_to(parent)
+            except:
+                continue
+            if new_parent:
+                yield k, os.fsencode(str(new_parent / rel))
+            else:
+                yield k
 
     def _resolve_links(self, *paths) -> Iterable:
         for path in paths:
@@ -373,8 +376,11 @@ class Worker(threading.Thread):
             for link, dest in self._path_for_link.items():
                 link = self._bytes_to_path(link)
                 dest = self._bytes_to_path(dest)
-                if path.is_relative_to(dest):
-                    yield str(link / path.relative_to(dest))
+                try:
+                    rel = path.relative_to(dest)
+                except:
+                    continue
+                yield str(link / rel)
 
     @property
     def is_crashed(self):
