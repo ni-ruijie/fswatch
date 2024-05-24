@@ -137,15 +137,13 @@ class Worker(threading.Thread):
             elif event.is_delete_file and src_path in self._path_for_link:
                 self._rm_link_watch(src_path)
             
-            if event.is_create_dir:
+            if event.is_create_dir or event.is_attrib_dir:
                 self._add_dir_watch(src_path, self._mask)
             
             elif event.is_delete_dir:
                 self._rm_watch(wd)
 
         self._controller.signal_inotify_stats(self._controller.EVENT, len(event_list))
-        for e in event_list:
-            print(repr(e))
         return event_list
     
     def recover(self):
@@ -244,6 +242,10 @@ class Worker(threading.Thread):
         
     def _add_watch(self, path, mask):
         if path in self._wd_for_path:
+            if not os.access(path, os.R_OK):
+                logger.warning(f'{path} lost permissions')
+                for rm_wd in list(self._select_subpaths(path)):
+                    self._rm_watch(rm_wd)
             return  # AUTO_RECOVERY:
         # int inotify_add_watch(int fd, const char *pathname, uint32_t mask);
         wd = inotify_add_watch(self._fd, path, mask)
@@ -260,7 +262,6 @@ class Worker(threading.Thread):
                 return
             elif err == errno.EACCES:
                 logger.warning(f'{path} permission denied')
-                # TODO: Remove watch
                 return
             self._raise(SystemError(
                 f'inotify_add_watch failed with unexpected errno {errno.errorcode[err]} '
@@ -323,10 +324,11 @@ class Worker(threading.Thread):
     def _bytes_to_path(b: bytes) -> pathlib.Path:
         return pathlib.Path(os.fsdecode(b))
     
-    def _select_subpaths(self, data: dict, parent) -> Iterable:
+    def _select_subpaths(self, parent) -> Iterable:
+        data = self._path_for_wd
         parent = self._bytes_to_path(parent)
         for k, v in data.items():
-            if pathlib.Path(v).is_relative_to(parent):
+            if self._bytes_to_path(v).is_relative_to(parent):
                 yield k
 
     def _resolve_links(self, *paths) -> Iterable:
