@@ -153,12 +153,12 @@ class InotifyEvent:
     def is_delete_file(self):
         """If is deletion of file or link."""
         return self._mask & InotifyConstants.IN_ISDIR == 0 and \
-            self._mask & InotifyConstants.IN_DELETE
+            self._mask & (InotifyConstants.IN_DELETE | InotifyConstants.IN_MOVED_FROM)
     
     @property
     def is_create_link(self):
         return osp.islink(self._src_path) and \
-            self._mask & InotifyConstants.IN_CREATE
+            self._mask & (InotifyConstants.IN_CREATE | InotifyConstants.IN_MOVED_TO)
     
     @property
     def is_modify_link(self):

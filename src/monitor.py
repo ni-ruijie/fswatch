@@ -353,10 +353,10 @@ def main(args):
 
     dispatcher = Dispatcher(name=args.name)
     # These masks are required
-    mask = InotifyConstants.IN_CREATE | InotifyConstants.IN_DELETE_SELF | InotifyConstants.IN_MODIFY \
+    mask = InotifyConstants.IN_CREATE | InotifyConstants.IN_DELETE | InotifyConstants.IN_DELETE_SELF \
          | InotifyConstants.IN_MOVED_FROM | InotifyConstants.IN_MOVED_TO | InotifyConstants.IN_MOVE_SELF \
-         | InotifyConstants.IN_ATTRIB \
-         | InotifyConstants.IN_ONLYDIR# | InotifyConstants.IN_MASK_CREATE
+         | InotifyConstants.IN_ATTRIB | InotifyConstants.IN_MODIFY \
+         | InotifyConstants.IN_ONLYDIR | InotifyConstants.IN_MASK_CREATE
     for route in dispatcher.routes:
         mask |= route.event & ~ExtendedInotifyConstants.EX_ALL_EX_EVENTS
     mask |= Route.parse_mask_from_str(settings.worker_extra_mask)
