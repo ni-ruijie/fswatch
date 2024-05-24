@@ -287,10 +287,12 @@ class Worker(threading.Thread):
                 self._emit(event)
                 self._db_logger.log_event(event)
 
-                if event.is_create_file:
+                if event.is_create_file or event.is_modify_file:
                     self._controller._tracker.watch_or_compare(event.src_path, self._buffer._queue.put)
-                if event.is_modify_file:
-                    self._controller._tracker.watch_or_compare(event.src_path, self._buffer._queue.put)
+                elif event.is_moveto_file:
+                    # Watch dest `b` if `mv a b`; or watch src `b` if `mv ../a b`
+                    self._controller._tracker.watch_or_compare(
+                        event.dest_path or event.src_path, self._buffer._queue.put)
                 # NOTE: We do not record the deletion of a tracked file, and when
                 #       the file is created again, it is regarded as the previous one.
 

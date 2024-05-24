@@ -6,6 +6,7 @@ from time import time
 from linux import InotifyConstants
 from loguru import logger
 from datetime import datetime
+from deprecated import deprecated
 
 
 __all__ = ['ExtendedInotifyConstants', 'InotifyEvent', 'ExtendedEvent']
@@ -125,23 +126,26 @@ class InotifyEvent:
             or (self._mask & InotifyConstants.IN_ISDIR > 0) ^ osp.isdir(self._src_path)
 
     @property
+    @deprecated
     def is_dir(self):
-        return self._mask & InotifyConstants.IN_ISDIR
+        return self._mask & InotifyConstants.IN_ISDIR and osp.isdir(self._src_path)
+    
+    @property
+    def is_file(self):
+        return self._mask & InotifyConstants.IN_ISDIR == 0 and osp.isfile(self._src_path)
     
     @property
     def is_create_file(self):
-        return osp.isfile(self._src_path) and \
-            self._mask & InotifyConstants.IN_CREATE
+        return self.is_file and self._mask & InotifyConstants.IN_CREATE
     
     @property
     def is_modify_file(self):
-        return osp.isfile(self._src_path) and \
-            self._mask & InotifyConstants.IN_MODIFY
+        return self.is_file and self._mask & ExtendedInotifyConstants.EX_END_MODIFY
     
     @property
-    def is_modify_file(self):
-        return osp.isfile(self._src_path) and \
-            self._mask & ExtendedInotifyConstants.EX_END_MODIFY
+    def is_moveto_file(self):
+        return self._mask & InotifyConstants.IN_ISDIR == 0 and self._mask & InotifyConstants.IN_MOVED_TO \
+            and osp.isfile(self.dest_path or self.src_path)
     
     @property
     def is_delete_file(self):

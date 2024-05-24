@@ -119,7 +119,8 @@ class InotifyBuffer(Thread):
             # Handle vim save with .swp
             if e.lsb == InotifyConstants.IN_CREATE:
                 check = lambda x: x._mask & ExtendedInotifyConstants.EX_RENAME and x._src_path == e._src_path
-                replace0 = lambda y: ExtendedEvent(InotifyConstants.IN_CREATE, src_path=y._dest_path)
+                replace0 = lambda y: ExtendedEvent(
+                    InotifyConstants.IN_CREATE, src_path=y._dest_path, event_time=y._time, override=y._mask)
                 replace = lambda y: ExtendedEvent.from_other(y, mask=InotifyConstants.IN_MODIFY, override=True)
                 for index, e0 in enumerate(grouped):
                     if check(e0):

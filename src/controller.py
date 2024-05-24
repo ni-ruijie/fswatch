@@ -173,7 +173,7 @@ class MasterController:
         self.close()
         
     @_cli.command('checkout')
-    @click.argument('path', type=click.Path(True, resolve_path=True))
+    @click.argument('path', type=click.Path(resolve_path=True))
     @click.option('version', '-v', type=int)
     @click.pass_context
     def __(self, path, version):
